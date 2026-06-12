@@ -33,8 +33,13 @@
 #define BLE_OFFSET_Y     0    // BLE y offset
 
 void drawMessage(const char *msg);
+void drawMorseText(const char *text, int x, int y);
 void drawZoomedMenu(const char *text, bool force = false);
 void drawScanGraphs(uint32_t freq);
+void waterfallReset();
+void waterfallAddRow();
+void drawWaterfall();
+void drawWebWaterfallLock();
 void drawScreen(const char *statusLine1 = 0, const char *statusLine2 = 0);
 
 void drawWiFiIndicator(int x, int y);

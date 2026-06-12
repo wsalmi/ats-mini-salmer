@@ -175,6 +175,7 @@ extern bool zoomMenu;
 extern int8_t scrollDirection;
 extern uint8_t utcOffsetIdx;
 extern uint8_t uiLayoutIdx;
+extern bool freqOverride;
 
 extern int8_t FmAgcIdx;
 extern int8_t AmAgcIdx;
@@ -211,9 +212,24 @@ float batteryMonitor();
 bool drawBattery(int x, int y);
 
 // Scan.c
-void scanRun(uint16_t centerFreq, uint16_t step);
+// Fast-scan parameters for the continuous RSSI waterfall (fewer points and a
+// shorter per-point tuning delay than a full one-shot scan, for responsiveness)
+#define WATERFALL_POINTS      40
+#define WATERFALL_TUNE_DELAY  10
+
+// points==0 / tuneDelay==0 keep the full-quality defaults (one-shot scan)
+// holdMute=true skips the per-scan mute/restore so the caller can keep audio
+// muted across multiple scans (used by the web waterfall mode)
+void scanRun(uint16_t centerFreq, uint16_t step, uint16_t points = 0, uint16_t tuneDelay = 0, bool holdMute = false);
 float scanGetRSSI(uint16_t freq);
 float scanGetSNR(uint16_t freq);
+bool scanIsDone();
+bool scanIsRunning();
+uint16_t scanGetStartFreq();
+uint16_t scanGetStep();
+int scanGetCount();
+uint8_t scanGetRawRSSI(int i);
+uint8_t scanGetRawSNR(int i);
 
 // Station.c
 const char *getStationName();
@@ -235,6 +251,8 @@ bool ntpSyncTime();
 
 void netRequestConnect();
 void netTickTime();
+int webRemoteLoop();
+bool webWaterfallActive();
 
 // Remote.c
 #define REMOTE_CHANGED   1
