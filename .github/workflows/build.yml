@@ -11,16 +11,10 @@ on:
       - '.github/workflows/build.yml'
       - '.pre-commit-config.yaml'
   push:
-    # tags:
-    #   - 'v*'
-    # branches:
-    #   - main
-    paths:
-      - 'ats-mini/**'
-      - 'changelog/**'
-      - 'CHANGELOG.md'
-      - '.github/workflows/build.yml'
-      - '.pre-commit-config.yaml'
+    tags:
+      - 'v*'
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       revision:
