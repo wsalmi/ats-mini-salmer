@@ -1810,7 +1810,14 @@ static const String webAppPage()
   "var span=hi-lo;if(span<=0)return[];var steps=[1e5,2e5,5e5,1e6,2e6,5e6,1e7];var st=steps[0];"
   "for(var i=0;i<steps.length;i++){if(span/steps[i]<=8){st=steps[i];break;}st=steps[i];}"
   "var g=[],f=Math.ceil(lo/st)*st;for(;f<=hi;f+=st)g.push(f);return g;}"
-"function fmtMHz(hz){return(hz/1e6).toFixed(hz%1e6?2:1);}"
+/* Adaptive frequency-axis unit for the whole Spectrum tab. Use kHz when the
+   mode is AM/SSB or the window span is < 1 MHz; otherwise MHz with decimals
+   scaled to the span. axFmt() returns an absolute freq with unit; axWidth()
+   formats a span/width with the same unit choice. */
+"function axKHz(){return !gFm||(lastScan&&lastScan.stepHz*(lastScan.count-1)<1e6);}"
+"function axDec(){var sp=lastScan?lastScan.stepHz*(lastScan.count-1):0;return sp>=2e7?1:(sp>=2e6?2:3);}"
+"function axFmt(hz){return axKHz()?fmtFreq(Math.round(hz/1000))+' kHz':(hz/1e6).toFixed(axDec())+' MHz';}"
+"function axWidth(hz){return axKHz()?fmtFreq(Math.round(hz/1000))+' kHz':(hz/1e6).toFixed(3)+' MHz';}"
 "function redraw(){drawSpec();drawWf();}"
 "function drawSpec(){var c=$('spec');if(!c)return;var x=c.getContext('2d'),W=c.width,H=c.height;"
   "x.clearRect(0,0,W,H);x.fillStyle='#070b10';x.fillRect(0,0,W,H);"
@@ -1821,7 +1828,7 @@ static const String webAppPage()
   "x.strokeStyle='rgba(255,178,74,0.25)';x.fillStyle='#8a99a8';x.font='10px monospace';x.lineWidth=1;"
   "var gl=gridLines(),lab=$('tLabels').checked;"
   "for(var i=0;i<gl.length;i++){var gx=Math.round(hzToX(gl[i],W))+0.5;x.beginPath();x.moveTo(gx,0);x.lineTo(gx,H);x.stroke();"
-  "if(lab){x.fillText(fmtMHz(gl[i])+' MHz',gx+2,11);}}"
+  "if(lab){x.fillText(axFmt(gl[i]),gx+2,11);}}"
   /* SNR trace (own scale) */
   "if($('tSnr').checked&&d.snr){var s=d.snr,smn=Math.min.apply(null,s),smx=Math.max.apply(null,s),srg=(smx-smn)||1;"
   "x.strokeStyle='#37d67a';x.lineWidth=1.5;x.beginPath();"
@@ -1842,7 +1849,7 @@ static const String webAppPage()
   /* tuned marker (dashed) */
   "var tx=hzToX(gFreqHz,W);if(tx>=0&&tx<=W){x.strokeStyle='#e7eef5';x.setLineDash([5,4]);x.lineWidth=1;"
   "x.beginPath();x.moveTo(tx,0);x.lineTo(tx,H);x.stroke();x.setLineDash([]);"
-  "if(lab){x.fillStyle='#e7eef5';x.fillText('Tuned '+fmtMHz(gFreqHz)+' MHz',Math.min(tx+3,W-90),H-4);}}}"
+  "if(lab){x.fillStyle='#e7eef5';x.fillText('Tuned '+axFmt(gFreqHz),Math.min(tx+3,W-90),H-4);}}}"
 "function drawWf(){var c=$('wfs');if(!c)return;c.style.display=$('tWf').checked?'block':'none';"
   "if(!$('tWf').checked)return;var x=c.getContext('2d'),W=c.width,H=c.height;"
   "var img=x.createImageData(W,H);for(var y=0;y<H;y++){var row=wfRows[y];for(var i=0;i<W;i++){"
@@ -1851,11 +1858,11 @@ static const String webAppPage()
   "x.fillStyle='#cfe2f5';x.font='10px monospace';var gl=gridLines();"
   "for(var i=0;i<gl.length;i++){var gx=Math.round(hzToX(gl[i],W));x.strokeStyle='rgba(255,255,255,0.15)';"
   "x.beginPath();x.moveTo(gx+0.5,0);x.lineTo(gx+0.5,H);x.stroke();"
-  "if($('tLabels').checked)x.fillText(fmtMHz(gl[i]),gx+2,H-3);}}"
+  "if($('tLabels').checked)x.fillText(axFmt(gl[i]),gx+2,H-3);}}"
 "var lastReadout='',lastRes='';"
 "function updateReadout(d){var n=d.count,lo=d.startHz,hi=d.startHz+d.stepHz*(n-1);var ctr=(lo+hi)/2;"
-  "var html='Center <b>'+fmtMHz(ctr)+' MHz</b> &nbsp; "
-  "Span <b>'+((hi-lo)/1e6).toFixed(3)+' MHz</b> &nbsp; Resolution <b>'+(d.stepHz/1000)+' kHz/pt</b> &nbsp; <b>'+n+'</b> pts';"
+  "var html='Center <b>'+axFmt(ctr)+'</b> &nbsp; "
+  "Span <b>'+axWidth(hi-lo)+'</b> &nbsp; Resolution <b>'+(d.stepHz/1000)+' kHz/pt</b> &nbsp; <b>'+n+'</b> pts';"
   "if(html!==lastReadout){lastReadout=html;var r=$('readout');if(r)r.innerHTML=html;}"
   "var res=''+(d.stepHz/1000);if(res!==lastRes){lastRes=res;var rv=$('resv');if(rv)rv.textContent=res;}}"
 /* canvas click -> tune */
@@ -1870,7 +1877,7 @@ static const String webAppPage()
 "window.addEventListener('resize',function(){if(specActive){fitCanvas();redraw();}});"
 "$('spec').addEventListener('click',function(e){canvClick(this,e);});"
 "$('wfs').addEventListener('click',function(e){canvClick(this,e);});"
-"function fmtHov(hz){return gFm?(hz/1e6).toFixed(3)+' MHz':(hz/1000).toFixed(0)+' kHz';}"
+"function fmtHov(hz){return axFmt(hz);}"
 "function hover(c,ev){if(!lastScan)return;var st=$('specstack'),sr=st.getBoundingClientRect(),cr=c.getBoundingClientRect();"
   "var frac=(ev.clientX-cr.left)/cr.width;frac=Math.max(0,Math.min(1,frac));"
   "var n=lastScan.count,hz=lastScan.startHz+lastScan.stepHz*frac*(n-1),xpx=ev.clientX-sr.left;"
