@@ -57,17 +57,16 @@ static void webSetConfig(AsyncWebServerRequest *request);
 
 static const String webInputField(const String &name, const String &value, bool pass = false);
 static const String webStyleSheet();
-static const String webNav(int active);
+static const String webNav();
 static const String webPage(const String &body);
 static const String webUtcOffsetSelector();
 static const String webThemeSelector();
-static const String webControlPage();
+static const String webAppPage();
 static const String webStatusJson();
 static const String webScanJson();
 static const String webMemoryJson();
 static void webMemoryCommand(AsyncWebServerRequest *request);
-static const String webMemoryPage();
-static const String webConfigPage();
+static const String webConfigBody();
 
 //
 // Web remote control command queue
@@ -623,20 +622,19 @@ static void webInit()
   if(!webCmdQueue)
     webCmdQueue = xQueueCreate(WEB_CMD_QUEUE_LEN, sizeof(uint8_t));
 
-  server.on("/", HTTP_ANY, [] (AsyncWebServerRequest *request) {
-    request->send(200, "text/html", webControlPage());
-  });
-
-  server.on("/memory", HTTP_ANY, [] (AsyncWebServerRequest *request) {
-    request->send(200, "text/html", webMemoryPage());
-  });
-
-  server.on("/config", HTTP_ANY, [] (AsyncWebServerRequest *request) {
+  // Single-page tabbed app (Spectrum / Control / Memory / Config). If web
+  // login credentials are configured, the whole UI requires authentication
+  // (previously only the Config page did). The legacy /memory and /config
+  // routes still resolve to the SPA, opening the matching tab via #hash.
+  auto serveApp = [] (AsyncWebServerRequest *request) {
     if(loginUsername != "" && loginPassword != "")
       if(!request->authenticate(loginUsername.c_str(), loginPassword.c_str()))
         return request->requestAuthentication();
-    request->send(200, "text/html", webConfigPage());
-  });
+    request->send(200, "text/html", webAppPage());
+  };
+  server.on("/", HTTP_ANY, serveApp);
+  server.on("/memory", HTTP_ANY, serveApp);
+  server.on("/config", HTTP_ANY, serveApp);
 
   // Live status as JSON, polled by the control page
   server.on("/api/status", HTTP_GET, [] (AsyncWebServerRequest *request) {
@@ -964,17 +962,38 @@ static const String webStyleSheet()
   "padding:.7em 1.6em;cursor:pointer}"
 "INPUT[type=checkbox]{width:auto;transform:scale(1.3);accent-color:var(--acc)}"
 "INPUT[type=range]{width:78%;accent-color:var(--acc);padding:0;border:none;background:none}"
+/* SPA tab bar + panes */
+".nav A{cursor:pointer}"
+".pane{display:none}"
+".pane.on{display:block}"
+/* spectrum view */
+".specwrap{max-width:1400px}"
+".sdrbar{display:flex;flex-wrap:wrap;align-items:center;gap:.45em;margin:0 0 .6em;font-size:.82em}"
+".sdrbar .sp{flex:0 0 auto}"
+".sdrbar BUTTON{flex:0 0 auto;padding:.45em .8em;font-size:.85em}"
+".sdrbar INPUT[type=number]{width:5.5em;padding:.4em .5em}"
+".sdrbar SELECT{width:auto;padding:.4em .5em}"
+".sdrbar LABEL{display:inline-flex;align-items:center;gap:.3em;color:var(--mut);cursor:pointer;white-space:nowrap}"
+".sdrbar .stat{margin-left:auto;color:var(--mut);font-variant-numeric:tabular-nums}"
+".readout{font-family:ui-monospace,Menlo,monospace;font-size:.78em;color:var(--mut);"
+  "margin:.2em 0 .5em;font-variant-numeric:tabular-nums}"
+".readout B{color:var(--tx)}"
+"CANVAS#spec{width:100%;height:300px;display:block;background:#070b10;border:1px solid var(--bd);"
+  "border-radius:10px 10px 0 0;cursor:crosshair}"
+"CANVAS#wfs{width:100%;height:240px;display:block;background:#000;border:1px solid var(--bd);"
+  "border-top:none;border-radius:0 0 10px 10px;image-rendering:pixelated;cursor:crosshair}"
 ;
 }
 
-static const String webNav(int active)
+static const String webNav()
 {
-  static const char *lbl[3]  = { "Status", "Memory", "Config" };
-  static const char *href[3] = { "/", "/memory", "/config" };
+  static const char *lbl[4] = { "Spectrum", "Control", "Memory", "Config" };
+  static const char *id[4]  = { "spectrum", "control", "memory", "config" };
 
   String n = "<DIV CLASS='bar'><DIV CLASS='brand'>ATS<SPAN>Mini</SPAN></DIV><DIV CLASS='nav'>";
-  for(int i=0 ; i<3 ; i++)
-    n += "<A HREF='" + String(href[i]) + "'" + (i==active? " CLASS='on'":"") + ">" + lbl[i] + "</A>";
+  for(int i=0 ; i<4 ; i++)
+    n += "<A DATA-TAB='" + String(id[i]) + "' ONCLICK=\"showTab('" + String(id[i]) + "')\""
+         + (i==0? " CLASS='on'":"") + ">" + lbl[i] + "</A>";
   n += "</DIV></DIV>";
   return n;
 }
@@ -1188,6 +1207,12 @@ static const String webScanJson()
     if(i) json += ',';
     json += String(scanGetRawRSSI(i));
   }
+  json += "],\"snr\":[";
+  for(int i=0 ; i<count ; i++)
+  {
+    if(i) json += ',';
+    json += String(scanGetRawSNR(i));
+  }
   json += "]}";
   return json;
 }
@@ -1276,317 +1301,10 @@ static void webMemoryCommand(AsyncWebServerRequest *request)
 }
 
 //
-// Main control page (single page app polling /api/status)
+// Config tab body (WiFi form + live device settings). Returns the inner HTML
+// for the Config pane; reads stored WiFi credentials from preferences.
 //
-static const String webControlPage()
-{
-  return webPage(webNav(0) +
-"<DIV CLASS='wrap'>"
-
-  "<DIV ID='wfban' CLASS='wfbanner' STYLE='display:none'>Waterfall ativo &mdash; r&aacute;dio pausado</DIV>"
-
-  "<DIV CLASS='card freqcard'>"
-    "<DIV CLASS='freq' ID='freq'>--<SPAN CLASS='u'></SPAN></DIV>"
-    "<DIV CLASS='meta' ID='meta'>--</DIV>"
-    "<DIV CLASS='rdstop' ID='topStation' STYLE='display:none'></DIV>"
-    "<DIV CLASS='rdsrt' ID='topRt' STYLE='display:none'></DIV>"
-  "</DIV>"
-
-  "<DIV CLASS='card'>"
-    "<DIV CLASS='ttl'>Signal</DIV>"
-    "<DIV CLASS='badges'>"
-      "<SPAN CLASS='badge' ID='bdgWifi'>Wi-Fi</SPAN>"
-      "<SPAN CLASS='badge' ID='bdgBle'>BLE</SPAN>"
-      "<SPAN CLASS='badge' ID='bdgRds'>RDS</SPAN>"
-      "<SPAN CLASS='badge' ID='bdgMorse'>CW</SPAN>"
-      "<SPAN CLASS='badge' ID='bdgOvr'>OVR</SPAN>"
-      "<SPAN CLASS='badge' ID='bdgMute'>Mute</SPAN>"
-    "</DIV>"
-    "<DIV CLASS='meter'><SPAN CLASS='ml'>RSSI</SPAN>"
-      "<DIV CLASS='track'><DIV CLASS='fill g' ID='rssiFill'></DIV></DIV>"
-      "<SPAN CLASS='mv' ID='rssiVal'>--</SPAN></DIV>"
-    "<DIV CLASS='scale'><SPAN>S1</SPAN><SPAN>S3</SPAN><SPAN>S5</SPAN><SPAN>S7</SPAN>"
-      "<SPAN>S9</SPAN><SPAN>+20</SPAN><SPAN>+40</SPAN></DIV>"
-    "<DIV CLASS='meter'><SPAN CLASS='ml'>SNR</SPAN>"
-      "<DIV CLASS='track'><DIV CLASS='fill g' ID='snrFill'></DIV></DIV>"
-      "<SPAN CLASS='mv' ID='snrVal'>--</SPAN></DIV>"
-    "<DIV CLASS='meter'><SPAN CLASS='ml'>Batt</SPAN>"
-      "<DIV CLASS='track'><DIV CLASS='fill g' ID='battFill'></DIV></DIV>"
-      "<SPAN CLASS='mv' ID='battVal'>--</SPAN></DIV>"
-    "<DIV CLASS='row'>"
-      "<BUTTON ID='autobtn' ONCLICK='toggleAuto()'>Waterfall: Off</BUTTON>"
-    "</DIV>"
-    "<CANVAS ID='wf' WIDTH='200' HEIGHT='140'></CANVAS>"
-    "<DIV CLASS='wfruler' ID='wfruler'></DIV>"
-    "<DIV CLASS='wfbar'><SPAN ID='wflo'></SPAN><SPAN>RSSI waterfall</SPAN><SPAN ID='wfhi'></SPAN></DIV>"
-    "<DIV CLASS='row' ID='spanrow' STYLE='margin-top:.4em'>"
-      "<BUTTON DATA-S='10' ONCLICK='setSpan(10)'>Span 1&times;</BUTTON>"
-      "<BUTTON DATA-S='20' ONCLICK='setSpan(20)'>2&times;</BUTTON>"
-      "<BUTTON DATA-S='40' ONCLICK='setSpan(40)'>4&times;</BUTTON>"
-    "</DIV>"
-  "</DIV>"
-
-  "<DIV CLASS='grid lockable'>"
-    "<DIV CLASS='card grp'><DIV CLASS='ttl'>Tuning</DIV>"
-      "<DIV CLASS='seg' STYLE='margin-bottom:.35em'>"
-        "<DIV CLASS='seg' ID='stepbtns' STYLE='flex:1'></DIV>"
-        "<SPAN CLASS='stepval'><SPAN CLASS='svl'>Step</SPAN><SPAN CLASS='svv' ID='stepbox'>--</SPAN></SPAN></DIV>"
-      "<DIV CLASS='seg'>"
-        "<BUTTON ONCLICK=\"cmd('r')\">&laquo; Tune</BUTTON>"
-        "<BUTTON ONCLICK=\"cmd('R')\">Tune &raquo;</BUTTON></DIV></DIV>"
-    "<DIV CLASS='card grp'><DIV CLASS='ttl'>Band &amp; Mode</DIV>"
-      "<DIV CLASS='seg' ID='modebtns' STYLE='margin-bottom:.35em'></DIV>"
-      "<DIV CLASS='setrow' STYLE='margin-bottom:.35em'>"
-        "<SELECT ID='bandsel' ONCHANGE=\"setVal('band',this.value)\"></SELECT></DIV>"
-      "<DIV CLASS='seg'>"
-        "<BUTTON ONCLICK=\"cmd('m')\">&laquo; Mode</BUTTON>"
-        "<BUTTON ONCLICK=\"cmd('M')\">Mode &raquo;</BUTTON>"
-        "<BUTTON ONCLICK=\"cmd('b')\">&laquo; Band</BUTTON>"
-        "<BUTTON ONCLICK=\"cmd('B')\">Band &raquo;</BUTTON></DIV></DIV>"
-    "<DIV CLASS='card grp'><DIV CLASS='ttl'>Step &amp; Bandwidth</DIV>"
-      "<DIV CLASS='seg' STYLE='margin-bottom:.35em'>"
-        "<BUTTON ONCLICK=\"cmd('s')\">&laquo; Step</BUTTON>"
-        "<BUTTON ONCLICK=\"cmd('S')\">Step &raquo;</BUTTON></DIV>"
-      "<DIV CLASS='seg'>"
-        "<BUTTON ONCLICK=\"cmd('w')\">&laquo; BW</BUTTON>"
-        "<BUTTON ONCLICK=\"cmd('W')\">BW &raquo;</BUTTON></DIV></DIV>"
-    "<DIV CLASS='card grp'><DIV CLASS='ttl'>Volume &amp; AGC</DIV>"
-      "<DIV CLASS='seg' STYLE='margin-bottom:.35em'>"
-        "<BUTTON ID='mutebtn' ONCLICK='toggleMute()'>Mute</BUTTON>"
-        "<BUTTON ONCLICK=\"cmd('v')\">Vol &minus;</BUTTON>"
-        "<BUTTON ONCLICK=\"cmd('V')\">Vol &plus;</BUTTON></DIV>"
-      "<DIV CLASS='seg'>"
-        "<BUTTON ID='agcbtn' ONCLICK='toggleAgc()'>AGC</BUTTON>"
-        "<BUTTON ONCLICK=\"cmd('a')\">AGC &minus;</BUTTON>"
-        "<BUTTON ONCLICK=\"cmd('A')\">AGC &plus;</BUTTON></DIV></DIV>"
-  "</DIV>"
-
-  "<DIV CLASS='card lockable'>"
-    "<DIV CLASS='ttl'>Set Frequency</DIV>"
-    "<DIV CLASS='setrow'>"
-      "<INPUT TYPE='TEXT' INPUTMODE='DECIMAL' ID='freqval' PLACEHOLDER='Set frequency'>"
-      "<SPAN CLASS='u' ID='setunit'>--</SPAN>"
-      "<BUTTON CLASS='btn acc' ONCLICK='setFreq()'>Set</BUTTON>"
-    "</DIV>"
-    "<DIV CLASS='hint' ID='sethint'>Enter the frequency in the unit shown.</DIV>"
-  "</DIV>"
-
-  "<TABLE>"
-    "<TR><TH COLSPAN=4 CLASS='HEADING'>Receiver</TH></TR>"
-    "<TR><TD CLASS='LABEL'>Step</TD><TD ID='step'>--</TD>"
-        "<TD CLASS='LABEL'>Bandwidth</TD><TD ID='bw'>--</TD></TR>"
-    "<TR><TD CLASS='LABEL'>Volume</TD><TD ID='vol'>--</TD>"
-        "<TD CLASS='LABEL'>AGC/Att</TD><TD ID='agc'>--</TD></TR>"
-    "<TR><TD CLASS='LABEL'>Station</TD><TD COLSPAN=3 ID='station'>--</TD></TR>"
-    "<TR><TD CLASS='LABEL'>RDS Text</TD><TD COLSPAN=3 ID='rt'>--</TD></TR>"
-  "</TABLE>"
-
-  "<TABLE>"
-    "<TR><TH COLSPAN=2 CLASS='HEADING'>Frequency Limit Override</TH></TR>"
-    "<TR><TD CLASS='LABEL'>Allow tuning beyond band limits</TD>"
-        "<TD><INPUT TYPE='CHECKBOX' ID='override' ONCHANGE=\"setVal('override', this.checked?1:0)\"></TD></TR>"
-    "<TR><TD COLSPAN=2 CLASS='HINT'>When unlocked, tuning ignores the firmware band edges "
-        "(still within the SI4732 physical range). Leave locked for normal behavior.</TD></TR>"
-  "</TABLE>"
-
-  "<TABLE>"
-    "<TR><TH COLSPAN=2 CLASS='HEADING'>Morse (CW) Decoder</TH></TR>"
-    "<TR><TD CLASS='LABEL'>Signal source</TD>"
-        "<TD><SELECT ID='morse' ONCHANGE=\"setVal('morse', this.value)\">"
-          "<OPTION VALUE='0'>Off</OPTION>"
-          "<OPTION VALUE='1'>RSSI/SNR</OPTION>"
-          "<OPTION VALUE='2'>CW (audio)</OPTION>"
-        "</SELECT></TD></TR>"
-    "<TR><TD COLSPAN=2 CLASS='HINT' ID='morsehint'>CW (audio) requires wiring the audio output "
-        "to GPIO11 (ADC2) with an RC filter (routed from the factory only on the V4). "
-        "Without the mod, use RSSI/SNR. "
-        "See <A HREF='https://github.com/esp32-si4732/ats-mini/discussions/267' TARGET='_blank'>discussion #267</A>.</TD></TR>"
-    "<TR><TD CLASS='LABEL'>Decoded</TD><TD CLASS='MONO' ID='morsetext'>--</TD></TR>"
-  "</TABLE>"
-"</DIV>"
-
-"<SCRIPT>"
-"var lastUnit='MHz',autoScan=false,scanning=false,scanPollT=null;"
-"function cmd(c){fetch('/api/cmd?c='+encodeURIComponent(c));}"
-"function setFreq(){var s=document.getElementById('freqval').value.replace(/[\\s\\u2009,]/g,'');"
-  "var v=parseFloat(s);if(isNaN(v))return;"
-  "var hz=lastUnit=='MHz'?Math.round(v*1e6):Math.round(v*1000);fetch('/api/freq?hz='+hz);}"
-"function setVal(k,v){fetch('/api/set?'+k+'='+encodeURIComponent(v));}"
-"function setStep(khz){fetch('/api/set?step='+khz);}"
-"function fmtStep(k){return k>=1000?((k%1000?(k/1000).toFixed(1):(k/1000))+'M'):(k+'k');}"
-"var lastSteps='';"
-"function renderSteps(a){if(!a)return;var key=a.join(',');if(key===lastSteps)return;lastSteps=key;"
-  "var c=document.getElementById('stepbtns');if(!c)return;c.innerHTML='';"
-  "for(var i=0;i<a.length;i++){var b=document.createElement('BUTTON');b.textContent=fmtStep(a[i]);"
-  "b.onclick=(function(k){return function(){setStep(k);};})(a[i]);c.appendChild(b);}}"
-"var curAgcAuto=false,curMuted=false;"
-"function toggleAgc(){setVal('agc',curAgcAuto?0:1);}"
-"function toggleMute(){setVal('mute',curMuted?0:1);}"
-"var lastModes='';"
-"function renderModes(d){if(!d.modes)return;var c=document.getElementById('modebtns');if(!c)return;"
-  "var key=d.modes.map(function(m){return m.i;}).join(',');"
-  "if(key!==lastModes){lastModes=key;c.innerHTML='';"
-    "d.modes.forEach(function(m){var b=document.createElement('BUTTON');b.textContent=m.n;b.setAttribute('data-i',m.i);"
-    "b.onclick=(function(i){return function(){setVal('mode',i);};})(m.i);c.appendChild(b);});}"
-  "var bs=c.children;for(var i=0;i<bs.length;i++){bs[i].classList.toggle('acc',+bs[i].getAttribute('data-i')===d.modeIdx);}}"
-"var lastBands='';"
-"function fmt1(x){return x%1?x.toFixed(1):x.toFixed(0);}"
-"function bandRange(b){"
-  "if(b.fm)return fmt1(b.lo/100)+' ~ '+fmt1(b.hi/100)+' MHz';"
-  "if(b.hi>=1000000)return fmt1(b.lo/1000)+' ~ '+fmt1(b.hi/1000)+' MHz';"
-  "return fmtFreq(b.lo)+' ~ '+fmtFreq(b.hi)+' kHz';}"
-"function renderBands(d){if(!d.bands)return;var sel=document.getElementById('bandsel');if(!sel)return;"
-  "var key=d.bands.map(function(b){return b.i;}).join(',');"
-  "if(key!==lastBands&&sel!==document.activeElement){lastBands=key;sel.innerHTML='';"
-    "d.bands.forEach(function(b){var o=document.createElement('OPTION');o.value=b.i;"
-    "o.textContent=b.n+' ('+bandRange(b)+')';sel.appendChild(o);});}"
-  "if(sel!==document.activeElement)sel.value=d.bandIdx;}"
-"function txt(id,v){document.getElementById(id).textContent=v;}"
-"function fmtHz(hz,u){return u=='MHz'?(hz/1e6).toFixed(2)+' MHz':(hz/1000).toFixed(0)+' kHz';}"
-"function grp(p){return p>=66?'fill g':p>=33?'fill a':'fill r';}"
-"function meter(fi,vi,p,t){var f=document.getElementById(fi);p=Math.max(0,Math.min(100,p));"
-  "f.style.width=p+'%';f.className=grp(p);txt(vi,t);}"
-"function bdg(id,on,warn){document.getElementById(id).className='badge'+(on?(warn?' warn':' on'):'');}"
-"function fmtFreq(s){var p=(''+s).split('.');p[0]=p[0].replace(/\\B(?=(\\d{3})+(?!\\d))/g,'\\u2009');return p.join('.');}"
-"function poll(){fetch('/api/status').then(r=>r.json()).then(d=>{"
-  "lastUnit=d.unit;"
-  "document.getElementById('freq').innerHTML=fmtFreq(d.freq)+\"<span class='u'>\"+d.unit+\"</span>\";"
-  "document.getElementById('meta').innerHTML='<b>'+d.band+'</b> &middot; '+d.mode;"
-  "txt('setunit',d.unit);txt('sethint','Enter the frequency in '+d.unit+'.');"
-  "var fq=document.getElementById('freqval');fq.placeholder='Set frequency ('+d.unit+')';"
-  "if(fq!==document.activeElement)fq.value=fmtFreq(d.freq);"
-  "meter('rssiFill','rssiVal',d.rssi/90*100,d.rssi+' dB\\u00b5V');"
-  "meter('snrFill','snrVal',d.snr/30*100,d.snr+' dB');"
-  "meter('battFill','battVal',(d.batt-3.0)/1.2*100,d.batt+' V');"
-  "bdg('bdgWifi',d.wifi>0);bdg('bdgBle',d.ble>0);bdg('bdgRds',!!(d.station&&d.station.length));"
-  "bdg('bdgMorse',d.morse>0);bdg('bdgOvr',d.override,true);bdg('bdgMute',d.muted,true);"
-  "txt('step',d.step);txt('bw',d.bw);txt('vol',d.muted?'Muted':d.vol);txt('agc',d.agcAuto?'AGC':('Att '+d.agc));"
-  "var sb=document.getElementById('stepbox');if(sb)sb.textContent=d.step;"
-  "renderSteps(d.steps);"
-  "curAgcAuto=!!d.agcAuto;curMuted=!!d.muted;"
-  "var ab=document.getElementById('agcbtn');if(ab)ab.classList.toggle('acc',curAgcAuto);"
-  "var mb=document.getElementById('mutebtn');if(mb)mb.classList.toggle('acc',curMuted);"
-  "renderModes(d);renderBands(d);"
-  "txt('station',d.station||'-');txt('rt',d.rt||'-');txt('morsetext',d.morseText||'-');"
-  "var st=(d.station||'').trim(),rtx=(d.rt||'').trim();"
-  "var ts=document.getElementById('topStation');ts.textContent=st;ts.style.display=st?'block':'none';"
-  "var trt=document.getElementById('topRt');trt.textContent=rtx;trt.style.display=rtx?'block':'none';"
-  "var ms=document.getElementById('morse');if(ms!==document.activeElement)ms.value=d.morse;"
-  "var ov=document.getElementById('override');if(ov!==document.activeElement)ov.checked=d.override;"
-  "document.getElementById('morsehint').style.color=(d.morse==2&&!d.morseAudio)?'var(--bad)':'';"
-  "}).catch(e=>{});}"
-"function heat(v){v=Math.max(0,Math.min(1,v));var r=Math.round(255*Math.min(1,v*2)),"
-  "g=Math.round(255*(1-Math.abs(v-0.5)*2)),b=Math.round(255*Math.max(0,1-v*2));return[r,g,b];}"
-"var wfRows=[],wfGrid=4;"
-"function drawWf(){var c=document.getElementById('wf'),x=c.getContext('2d'),W=c.width,H=c.height;"
-  "var img=x.createImageData(W,H);for(var y=0;y<H;y++){var row=wfRows[y];for(var i=0;i<W;i++){"
-  "var v=row?row[i]:0,col=heat(v),o=(y*W+i)*4;img.data[o]=col[0];img.data[o+1]=col[1];img.data[o+2]=col[2];img.data[o+3]=255;}}"
-  "x.putImageData(img,0,0);"
-  "x.strokeStyle='rgba(255,255,255,0.15)';x.lineWidth=1;"
-  "for(var g=1;g<wfGrid;g++){var gx=Math.round(g*W/wfGrid)+0.5;"
-  "x.beginPath();x.moveTo(gx,0);x.lineTo(gx,H);x.stroke();}}"
-"function wfTick(hz,unit){return unit=='MHz'?(hz/1e6).toFixed(1):fmtFreq(Math.round(hz/1000));}"
-"function setRuler(lo,hi,unit){var r=document.getElementById('wfruler');if(!r)return;var h='';"
-  "for(var g=0;g<=wfGrid;g++){var f=lo+(hi-lo)*g/wfGrid,wu=(g==0||g==wfGrid);"
-  "h+='<SPAN>'+wfTick(f,unit)+(wu?' '+unit:'')+'</SPAN>';}r.innerHTML=h;}"
-"function addRow(d){var a=d.rssi,n=d.count;if(!n)return;"
-  "var mn=Math.min.apply(null,a),mx=Math.max.apply(null,a);"
-  "var c=document.getElementById('wf'),W=c.width;var row=new Array(W);"
-  "for(var i=0;i<W;i++){row[i]=(a[Math.floor(i*n/W)]-mn)/(mx-mn+1);}"
-  "wfRows.unshift(row);if(wfRows.length>c.height)wfRows.pop();drawWf();"
-  "var hi=d.startHz+d.stepHz*(n-1);"
-  "txt('wflo',fmtHz(d.startHz,d.unit));txt('wfhi',fmtHz(hi,d.unit));setRuler(d.startHz,hi,d.unit);}"
-"function setScanBtn(on){var b=document.getElementById('scanbtn');if(!b)return;b.disabled=on;"
-  "b.textContent=on?'Scanning\\u2026':'Scan now';}"
-"function scanDone(){scanning=false;setScanBtn(false);}"
-"function pollScan(tries){scanPollT=null;fetch('/api/scan').then(r=>r.json()).then(d=>{"
-  "if(d.busy){if(tries<240)scanPollT=setTimeout(function(){pollScan(tries+1);},120);else scanDone();return;}"
-  "if(d.count>0)addRow(d);scanDone();"
-  "if(autoScan)scanPollT=setTimeout(scanOnce,60);"
-  "}).catch(function(){if(tries<240)scanPollT=setTimeout(function(){pollScan(tries+1);},120);else scanDone();});}"
-"function scanOnce(){if(scanning)return;scanning=true;setScanBtn(true);"
-  "fetch('/api/scan?run=1'+(autoScan?'&auto=1':'')).then(function(){pollScan(0);}).catch(function(){"
-  "scanPollT=setTimeout(function(){pollScan(0);},120);});}"
-"function lockRadio(on){var n=document.querySelectorAll('.lockable');"
-  "for(var i=0;i<n.length;i++)n[i].classList.toggle('locked',on);"
-  "var ban=document.getElementById('wfban');if(ban)ban.style.display=on?'block':'none';}"
-"function toggleAuto(){autoScan=!autoScan;var b=document.getElementById('autobtn');"
-  "b.textContent='Waterfall: '+(autoScan?'On':'Off');b.classList.toggle('acc',autoScan);lockRadio(autoScan);"
-  "fetch('/api/scan?auto='+(autoScan?1:0)).catch(function(){});"
-  "if(autoScan){if(!scanning)scanOnce();}else if(scanPollT){clearTimeout(scanPollT);scanPollT=null;}}"
-"var curSpan=10;"
-"function setSpan(s){curSpan=s;wfRows=[];drawWf();"
-  "var r=document.getElementById('spanrow');if(r){var b=r.children;"
-  "for(var i=0;i<b.length;i++)b[i].classList.toggle('acc',+b[i].getAttribute('data-s')===s);}"
-  "fetch('/api/scan?span='+s).catch(function(){});}"
-"setSpan(10);setInterval(poll,1000);poll();scanOnce();"
-"</SCRIPT>"
-);
-}
-
-static const String webMemoryPage()
-{
-  // Server-rendered band/mode option lists for the manual editor
-  String bandOpts = "";
-  for(int i=0 ; i<getTotalBands() ; i++)
-    bandOpts += "<OPTION VALUE='" + String(bands[i].bandName) + "'>" + String(bands[i].bandName) + "</OPTION>";
-
-  String modeOpts = "";
-  for(int i=0 ; i<getTotalModes() ; i++)
-    modeOpts += "<OPTION VALUE='" + String(bandModeDesc[i]) + "'>" + String(bandModeDesc[i]) + "</OPTION>";
-
-  return webPage(webNav(1) +
-"<DIV CLASS='wrap'>"
-  "<TABLE CLASS='STAT'>"
-    "<TR><TH COLSPAN=4 CLASS='HEADING'>Stored Stations <SPAN ID='mcount'></SPAN></TH></TR>"
-    "<TBODY ID='mlist'><TR><TD COLSPAN=4 CLASS='CENTER'>Loading...</TD></TR></TBODY>"
-  "</TABLE>"
-
-  "<TABLE CLASS='STAT'>"
-    "<TR><TH COLSPAN=2 CLASS='HEADING'>Save Current Frequency</TH></TR>"
-    "<TR><TD CLASS='LABEL'>Slot</TD>"
-        "<TD><INPUT TYPE='NUMBER' ID='saveslot' MIN='1' VALUE='1' STYLE='width:5em'> "
-        "<BUTTON ONCLICK='saveCur()'>Save here</BUTTON></TD></TR>"
-    "<TR><TD COLSPAN=2 CLASS='HINT'>Stores the currently tuned frequency and mode into the chosen slot.</TD></TR>"
-  "</TABLE>"
-
-  "<TABLE CLASS='STAT'>"
-    "<TR><TH COLSPAN=2 CLASS='HEADING'>Manual Edit</TH></TR>"
-    "<TR><TD CLASS='LABEL'>Slot</TD><TD><INPUT TYPE='NUMBER' ID='eslot' MIN='1' VALUE='1' STYLE='width:5em'></TD></TR>"
-    "<TR><TD CLASS='LABEL'>Band</TD><TD><SELECT ID='eband'>" + bandOpts + "</SELECT></TD></TR>"
-    "<TR><TD CLASS='LABEL'>Frequency</TD><TD>"
-        "<INPUT TYPE='NUMBER' STEP='any' ID='efreq' STYLE='width:8em'> "
-        "<SELECT ID='eunit'><OPTION VALUE='k'>kHz</OPTION><OPTION VALUE='M'>MHz</OPTION></SELECT></TD></TR>"
-    "<TR><TD CLASS='LABEL'>Mode</TD><TD><SELECT ID='emode'>" + modeOpts + "</SELECT></TD></TR>"
-    "<TR><TD COLSPAN=2 CLASS='CENTER'><BUTTON ONCLICK='setSlot()'>Write slot</BUTTON></TD></TR>"
-  "</TABLE>"
-"</DIV>"
-
-"<SCRIPT>"
-"function fmtFreq(hz,m){return m=='FM'?(hz/1e6).toFixed(2)+' MHz':(hz/1000).toFixed(0)+' kHz';}"
-"function load(){fetch('/api/memory').then(r=>r.json()).then(d=>{"
-  "var t=document.getElementById('mlist');t.innerHTML='';"
-  "document.getElementById('mcount').textContent='('+d.used.length+'/'+d.total+')';"
-  "if(!d.used.length){t.innerHTML=\"<TR><TD COLSPAN=4 CLASS='CENTER'>No stations stored</TD></TR>\";return;}"
-  "d.used.forEach(function(m){var tr=document.createElement('tr');"
-    "tr.innerHTML=\"<TD CLASS='LABEL'>\"+(m.s<10?'0':'')+m.s+\"</TD><TD>\"+fmtFreq(m.f,m.m)+\"</TD>\"+"
-    "\"<TD>\"+m.b+' '+m.m+\"</TD><TD><BUTTON onclick='act(\\\"tune\\\",\"+m.s+\")'>Tune</BUTTON> \"+"
-    "\"<BUTTON onclick='act(\\\"clear\\\",\"+m.s+\")'>Clear</BUTTON></TD>\";t.appendChild(tr);});"
-  "}).catch(e=>{});}"
-"function refresh(){setTimeout(load,600);}"
-"function act(a,s){fetch('/api/mem?action='+a+'&slot='+s).then(refresh);}"
-"function saveCur(){var s=document.getElementById('saveslot').value;fetch('/api/mem?action=save&slot='+s).then(refresh);}"
-"function setSlot(){var s=document.getElementById('eslot').value,b=document.getElementById('eband').value,"
-  "m=document.getElementById('emode').value,v=parseFloat(document.getElementById('efreq').value);"
-  "if(isNaN(v)){alert('Enter a frequency');return;}"
-  "var hz=document.getElementById('eunit').value=='M'?Math.round(v*1e6):Math.round(v*1000);"
-  "fetch('/api/mem?action=set&slot='+s+'&band='+encodeURIComponent(b)+'&hz='+hz+'&mode='+encodeURIComponent(m)).then(refresh);}"
-"setInterval(load,3000);load();"
-"</SCRIPT>"
-);
-}
-
-const String webConfigPage()
+static const String webConfigBody()
 {
   prefs.begin("network", true, STORAGE_PARTITION);
   String ssid1 = prefs.getString("wifissid1", "");
@@ -1598,59 +1316,29 @@ const String webConfigPage()
   bool scanHidden = prefs.getBool("wifiscanhidden", false);
   prefs.end();
 
-  return webPage(webNav(2) +
-"<DIV CLASS='wrap'>"
+  return String(
 "<FORM ACTION='/setconfig' METHOD='POST'>"
   "<TABLE COLUMNS=2>"
   "<TR><TH COLSPAN=2 CLASS='HEADING'>WiFi Network 1</TH></TR>"
-  "<TR>"
-    "<TD CLASS='LABEL'>SSID</TD>"
-    "<TD>" + webInputField("wifissid1", ssid1) + "</TD>"
-  "</TR>"
-  "<TR>"
-    "<TD CLASS='LABEL'>Password</TD>"
-    "<TD>" + webInputField("wifipass1", pass1, true) + "</TD>"
-  "</TR>"
+  "<TR><TD CLASS='LABEL'>SSID</TD><TD>") + webInputField("wifissid1", ssid1) + "</TD></TR>"
+  "<TR><TD CLASS='LABEL'>Password</TD><TD>" + webInputField("wifipass1", pass1, true) + "</TD></TR>"
   "<TR><TH COLSPAN=2 CLASS='HEADING'>WiFi Network 2</TH></TR>"
-  "<TR>"
-    "<TD CLASS='LABEL'>SSID</TD>"
-    "<TD>" + webInputField("wifissid2", ssid2) + "</TD>"
-  "</TR>"
-  "<TR>"
-    "<TD CLASS='LABEL'>Password</TD>"
-    "<TD>" + webInputField("wifipass2", pass2, true) + "</TD>"
-  "</TR>"
+  "<TR><TD CLASS='LABEL'>SSID</TD><TD>" + webInputField("wifissid2", ssid2) + "</TD></TR>"
+  "<TR><TD CLASS='LABEL'>Password</TD><TD>" + webInputField("wifipass2", pass2, true) + "</TD></TR>"
   "<TR><TH COLSPAN=2 CLASS='HEADING'>WiFi Network 3</TH></TR>"
-  "<TR>"
-    "<TD CLASS='LABEL'>SSID</TD>"
-    "<TD>" + webInputField("wifissid3", ssid3) + "</TD>"
-  "</TR>"
-  "<TR>"
-    "<TD CLASS='LABEL'>Password</TD>"
-    "<TD>" + webInputField("wifipass3", pass3, true) + "</TD>"
-  "</TR>"
+  "<TR><TD CLASS='LABEL'>SSID</TD><TD>" + webInputField("wifissid3", ssid3) + "</TD></TR>"
+  "<TR><TD CLASS='LABEL'>Password</TD><TD>" + webInputField("wifipass3", pass3, true) + "</TD></TR>"
   "<TR><TH COLSPAN=2 CLASS='HEADING'>This Web UI Login Credentials</TH></TR>"
-  "<TR>"
-    "<TD CLASS='LABEL'>Username</TD>"
-    "<TD>" + webInputField("username", loginUsername) + "</TD>"
-  "</TR>"
-  "<TR>"
-    "<TD CLASS='LABEL'>Password</TD>"
-    "<TD>" + webInputField("password", loginPassword, true) + "</TD>"
-  "</TR>"
+  "<TR><TD CLASS='LABEL'>Username</TD><TD>" + webInputField("username", loginUsername) + "</TD></TR>"
+  "<TR><TD CLASS='LABEL'>Password</TD><TD>" + webInputField("password", loginPassword, true) + "</TD></TR>"
   "<TR><TH COLSPAN=2 CLASS='HEADING'>WiFi Options</TH></TR>"
-  "<TR>"
-    "<TD CLASS='LABEL'>Scan Hidden SSIDs</TD>"
+  "<TR><TD CLASS='LABEL'>Scan Hidden SSIDs</TD>"
     "<TD><INPUT TYPE='CHECKBOX' NAME='wifiscanhidden' VALUE='on'" +
-    (scanHidden? " CHECKED ":"") + "></TD>"
-  "</TR>"
-  "<TR><TH COLSPAN=2 CLASS='HEADING'>"
-    "<INPUT TYPE='SUBMIT' VALUE='Save WiFi'>"
-  "</TH></TR>"
+    (scanHidden? " CHECKED ":"") + "></TD></TR>"
+  "<TR><TH COLSPAN=2 CLASS='HEADING'><INPUT TYPE='SUBMIT' VALUE='Save WiFi'></TH></TR>"
   "</TABLE>"
 "</FORM>"
 
-// Live device settings (applied immediately and persisted)
 "<TABLE COLUMNS=2>"
   "<TR><TH COLSPAN=2 CLASS='HEADING'>Display &amp; UI</TH></TR>"
   "<TR><TD CLASS='LABEL'>Brightness</TD><TD>"
@@ -1695,29 +1383,431 @@ const String webConfigPage()
       "<OPTION VALUE='0'>Off</OPTION><OPTION VALUE='1'>Ad hoc</OPTION>"
       "<OPTION VALUE='2'>HID</OPTION></SELECT></TD></TR>"
   "<TR><TD CLASS='LABEL'>Wi-Fi</TD><TD>"
-    "<SELECT ID='wifi' ONCHANGE=\"if(confirm('Changing Wi-Fi may drop this connection. Continue?'))sset('wifi',this.value);else load();\">"
+    "<SELECT ID='wifi' ONCHANGE=\"if(confirm('Changing Wi-Fi may drop this connection. Continue?'))sset('wifi',this.value);else cfgLoad();\">"
       "<OPTION VALUE='0'>Off</OPTION><OPTION VALUE='1'>AP Only</OPTION>"
       "<OPTION VALUE='2'>AP+Connect</OPTION><OPTION VALUE='3'>Connect</OPTION>"
       "<OPTION VALUE='4'>Sync Only</OPTION></SELECT></TD></TR>"
-  "<TR><TD COLSPAN=2 CLASS='HINT'>These settings apply immediately and are saved. "
-      "Morse decoder and frequency-limit override are on the "
-      "<A HREF='/'>Status</A> page.</TD></TR>"
+  "<TR><TD COLSPAN=2 CLASS='HINT'>These settings apply immediately and are saved.</TD></TR>"
 "</TABLE>"
+;
+}
 
+//
+// Single-page tabbed app: Spectrum (SDR view), Control, Memory, Config.
+// Tabs switch client-side; all panes share the /api/status, /api/scan,
+// /api/memory, /api/set, /api/freq and /api/cmd endpoints.
+//
+static const String webAppPage()
+{
+  // Server-rendered band/mode option lists for the manual memory editor
+  String bandOpts = "";
+  for(int i=0 ; i<getTotalBands() ; i++)
+    bandOpts += "<OPTION VALUE='" + String(bands[i].bandName) + "'>" + String(bands[i].bandName) + "</OPTION>";
+
+  String modeOpts = "";
+  for(int i=0 ; i<getTotalModes() ; i++)
+    modeOpts += "<OPTION VALUE='" + String(bandModeDesc[i]) + "'>" + String(bandModeDesc[i]) + "</OPTION>";
+
+  String body = webNav();
+
+  // ---- Spectrum tab -------------------------------------------------------
+  body +=
+"<DIV ID='spectrum' CLASS='pane on'><DIV CLASS='wrap specwrap'>"
+  "<DIV CLASS='card'>"
+    "<DIV CLASS='sdrbar'>"
+      "<BUTTON ID='runbtn' CLASS='acc sp' ONCLICK='setRun(!specRun)'>Run</BUTTON>"
+      "<BUTTON CLASS='sp' ONCLICK='single()'>Single</BUTTON>"
+      "<SPAN CLASS='sp'>&nbsp;</SPAN>"
+      "<BUTTON CLASS='sp' DATA-SP='1' ONCLICK='setStepPreset(1)'>Fast</BUTTON>"
+      "<BUTTON CLASS='sp acc' DATA-SP='2' ONCLICK='setStepPreset(2)'>Medium</BUTTON>"
+      "<BUTTON CLASS='sp' DATA-SP='4' ONCLICK='setStepPreset(4)'>Wide</BUTTON>"
+      "<SPAN CLASS='sp'>Span</SPAN>"
+      "<INPUT CLASS='sp' TYPE='NUMBER' ID='spaninp' MIN='10' STEP='10' ONCHANGE='setSpanKHz()'>"
+      "<SPAN CLASS='sp'>kHz</SPAN>"
+      "<SPAN CLASS='sp'>Res <B ID='resv'>--</B> kHz</SPAN>"
+      "<LABEL><INPUT TYPE='CHECKBOX' ID='tSnr' CHECKED ONCHANGE='redraw()'>SNR</LABEL>"
+      "<LABEL><INPUT TYPE='CHECKBOX' ID='tPeak' CHECKED ONCHANGE='redraw()'>Peak</LABEL>"
+      "<LABEL><INPUT TYPE='CHECKBOX' ID='tLabels' CHECKED ONCHANGE='redraw()'>Labels</LABEL>"
+      "<LABEL><INPUT TYPE='CHECKBOX' ID='tAvg' ONCHANGE='redraw()'>Avg</LABEL>"
+      "<LABEL><INPUT TYPE='CHECKBOX' ID='tWf' CHECKED ONCHANGE='toggleWf()'>Waterfall</LABEL>"
+      "<SELECT CLASS='sp' ID='cmap' ONCHANGE='redraw()'>"
+        "<OPTION VALUE='viridis'>Viridis</OPTION><OPTION VALUE='inferno'>Inferno</OPTION>"
+        "<OPTION VALUE='gray'>Grayscale</OPTION></SELECT>"
+      "<A CLASS='sp' STYLE='cursor:pointer' ONCLICK='resetPeak()'>reset peak</A>"
+      "<SPAN CLASS='stat' ID='specstat'>idle</SPAN>"
+    "</DIV>"
+    "<DIV CLASS='readout' ID='readout'>Center -- &nbsp; Span -- &nbsp; Resolution -- &nbsp; -- pts</DIV>"
+    "<CANVAS ID='spec'></CANVAS>"
+    "<CANVAS ID='wfs'></CANVAS>"
+    "<DIV CLASS='hint'>Click the spectrum or waterfall to tune; detected channels snap to the nearest peak.</DIV>"
+  "</DIV>"
+"</DIV></DIV>";
+
+  // ---- Control tab --------------------------------------------------------
+  body +=
+"<DIV ID='control' CLASS='pane'><DIV CLASS='wrap'>"
+  "<DIV ID='wfban' CLASS='wfbanner' STYLE='display:none'>Spectrum running &mdash; radio paused</DIV>"
+  "<DIV CLASS='card freqcard'>"
+    "<DIV CLASS='freq' ID='freq'>--<SPAN CLASS='u'></SPAN></DIV>"
+    "<DIV CLASS='meta' ID='meta'>--</DIV>"
+    "<DIV CLASS='rdstop' ID='topStation' STYLE='display:none'></DIV>"
+    "<DIV CLASS='rdsrt' ID='topRt' STYLE='display:none'></DIV>"
+  "</DIV>"
+  "<DIV CLASS='card'>"
+    "<DIV CLASS='ttl'>Signal</DIV>"
+    "<DIV CLASS='badges'>"
+      "<SPAN CLASS='badge' ID='bdgWifi'>Wi-Fi</SPAN>"
+      "<SPAN CLASS='badge' ID='bdgBle'>BLE</SPAN>"
+      "<SPAN CLASS='badge' ID='bdgRds'>RDS</SPAN>"
+      "<SPAN CLASS='badge' ID='bdgMorse'>CW</SPAN>"
+      "<SPAN CLASS='badge' ID='bdgOvr'>OVR</SPAN>"
+      "<SPAN CLASS='badge' ID='bdgMute'>Mute</SPAN>"
+    "</DIV>"
+    "<DIV CLASS='meter'><SPAN CLASS='ml'>RSSI</SPAN>"
+      "<DIV CLASS='track'><DIV CLASS='fill g' ID='rssiFill'></DIV></DIV>"
+      "<SPAN CLASS='mv' ID='rssiVal'>--</SPAN></DIV>"
+    "<DIV CLASS='scale'><SPAN>S1</SPAN><SPAN>S3</SPAN><SPAN>S5</SPAN><SPAN>S7</SPAN>"
+      "<SPAN>S9</SPAN><SPAN>+20</SPAN><SPAN>+40</SPAN></DIV>"
+    "<DIV CLASS='meter'><SPAN CLASS='ml'>SNR</SPAN>"
+      "<DIV CLASS='track'><DIV CLASS='fill g' ID='snrFill'></DIV></DIV>"
+      "<SPAN CLASS='mv' ID='snrVal'>--</SPAN></DIV>"
+    "<DIV CLASS='meter'><SPAN CLASS='ml'>Batt</SPAN>"
+      "<DIV CLASS='track'><DIV CLASS='fill g' ID='battFill'></DIV></DIV>"
+      "<SPAN CLASS='mv' ID='battVal'>--</SPAN></DIV>"
+  "</DIV>"
+  "<DIV CLASS='grid lockable'>"
+    "<DIV CLASS='card grp'><DIV CLASS='ttl'>Tuning</DIV>"
+      "<DIV CLASS='seg' STYLE='margin-bottom:.35em'>"
+        "<DIV CLASS='seg' ID='stepbtns' STYLE='flex:1'></DIV>"
+        "<SPAN CLASS='stepval'><SPAN CLASS='svl'>Step</SPAN><SPAN CLASS='svv' ID='stepbox'>--</SPAN></SPAN></DIV>"
+      "<DIV CLASS='seg'>"
+        "<BUTTON ONCLICK=\"cmd('r')\">&laquo; Tune</BUTTON>"
+        "<BUTTON ONCLICK=\"cmd('R')\">Tune &raquo;</BUTTON></DIV></DIV>"
+    "<DIV CLASS='card grp'><DIV CLASS='ttl'>Band &amp; Mode</DIV>"
+      "<DIV CLASS='seg' ID='modebtns' STYLE='margin-bottom:.35em'></DIV>"
+      "<DIV CLASS='setrow' STYLE='margin-bottom:.35em'>"
+        "<SELECT ID='bandsel' ONCHANGE=\"setVal('band',this.value)\"></SELECT></DIV>"
+      "<DIV CLASS='seg'>"
+        "<BUTTON ONCLICK=\"cmd('m')\">&laquo; Mode</BUTTON>"
+        "<BUTTON ONCLICK=\"cmd('M')\">Mode &raquo;</BUTTON>"
+        "<BUTTON ONCLICK=\"cmd('b')\">&laquo; Band</BUTTON>"
+        "<BUTTON ONCLICK=\"cmd('B')\">Band &raquo;</BUTTON></DIV></DIV>"
+    "<DIV CLASS='card grp'><DIV CLASS='ttl'>Step &amp; Bandwidth</DIV>"
+      "<DIV CLASS='seg' STYLE='margin-bottom:.35em'>"
+        "<BUTTON ONCLICK=\"cmd('s')\">&laquo; Step</BUTTON>"
+        "<BUTTON ONCLICK=\"cmd('S')\">Step &raquo;</BUTTON></DIV>"
+      "<DIV CLASS='seg'>"
+        "<BUTTON ONCLICK=\"cmd('w')\">&laquo; BW</BUTTON>"
+        "<BUTTON ONCLICK=\"cmd('W')\">BW &raquo;</BUTTON></DIV></DIV>"
+    "<DIV CLASS='card grp'><DIV CLASS='ttl'>Volume &amp; AGC</DIV>"
+      "<DIV CLASS='seg' STYLE='margin-bottom:.35em'>"
+        "<BUTTON ID='mutebtn' ONCLICK='toggleMute()'>Mute</BUTTON>"
+        "<BUTTON ONCLICK=\"cmd('v')\">Vol &minus;</BUTTON>"
+        "<BUTTON ONCLICK=\"cmd('V')\">Vol &plus;</BUTTON></DIV>"
+      "<DIV CLASS='seg'>"
+        "<BUTTON ID='agcbtn' ONCLICK='toggleAgc()'>AGC</BUTTON>"
+        "<BUTTON ONCLICK=\"cmd('a')\">AGC &minus;</BUTTON>"
+        "<BUTTON ONCLICK=\"cmd('A')\">AGC &plus;</BUTTON></DIV></DIV>"
+  "</DIV>"
+  "<DIV CLASS='card lockable'>"
+    "<DIV CLASS='ttl'>Set Frequency</DIV>"
+    "<DIV CLASS='setrow'>"
+      "<INPUT TYPE='TEXT' INPUTMODE='DECIMAL' ID='freqval' PLACEHOLDER='Set frequency'>"
+      "<SPAN CLASS='u' ID='setunit'>--</SPAN>"
+      "<BUTTON CLASS='btn acc' ONCLICK='setFreq()'>Set</BUTTON>"
+    "</DIV>"
+    "<DIV CLASS='hint' ID='sethint'>Enter the frequency in the unit shown.</DIV>"
+  "</DIV>"
+  "<TABLE>"
+    "<TR><TH COLSPAN=4 CLASS='HEADING'>Receiver</TH></TR>"
+    "<TR><TD CLASS='LABEL'>Step</TD><TD ID='step'>--</TD>"
+        "<TD CLASS='LABEL'>Bandwidth</TD><TD ID='bw'>--</TD></TR>"
+    "<TR><TD CLASS='LABEL'>Volume</TD><TD ID='vol'>--</TD>"
+        "<TD CLASS='LABEL'>AGC/Att</TD><TD ID='agc'>--</TD></TR>"
+    "<TR><TD CLASS='LABEL'>Station</TD><TD COLSPAN=3 ID='station'>--</TD></TR>"
+    "<TR><TD CLASS='LABEL'>RDS Text</TD><TD COLSPAN=3 ID='rt'>--</TD></TR>"
+  "</TABLE>"
+  "<TABLE>"
+    "<TR><TH COLSPAN=2 CLASS='HEADING'>Frequency Limit Override</TH></TR>"
+    "<TR><TD CLASS='LABEL'>Allow tuning beyond band limits</TD>"
+        "<TD><INPUT TYPE='CHECKBOX' ID='override' ONCHANGE=\"setVal('override', this.checked?1:0)\"></TD></TR>"
+    "<TR><TD COLSPAN=2 CLASS='HINT'>When unlocked, tuning ignores the firmware band edges "
+        "(still within the SI4732 physical range). Leave locked for normal behavior.</TD></TR>"
+  "</TABLE>"
+  "<TABLE>"
+    "<TR><TH COLSPAN=2 CLASS='HEADING'>Morse (CW) Decoder</TH></TR>"
+    "<TR><TD CLASS='LABEL'>Signal source</TD>"
+        "<TD><SELECT ID='morse' ONCHANGE=\"setVal('morse', this.value)\">"
+          "<OPTION VALUE='0'>Off</OPTION>"
+          "<OPTION VALUE='1'>RSSI/SNR</OPTION>"
+          "<OPTION VALUE='2'>CW (audio)</OPTION>"
+        "</SELECT></TD></TR>"
+    "<TR><TD COLSPAN=2 CLASS='HINT' ID='morsehint'>CW (audio) requires wiring the audio output "
+        "to GPIO11 (ADC2) with an RC filter (routed from the factory only on the V4). "
+        "Without the mod, use RSSI/SNR. "
+        "See <A HREF='https://github.com/esp32-si4732/ats-mini/discussions/267' TARGET='_blank'>discussion #267</A>.</TD></TR>"
+    "<TR><TD CLASS='LABEL'>Decoded</TD><TD CLASS='MONO' ID='morsetext'>--</TD></TR>"
+  "</TABLE>"
+"</DIV></DIV>";
+
+  // ---- Memory tab ---------------------------------------------------------
+  body +=
+"<DIV ID='memory' CLASS='pane'><DIV CLASS='wrap'>"
+  "<TABLE>"
+    "<TR><TH COLSPAN=4 CLASS='HEADING'>Stored Stations <SPAN ID='mcount'></SPAN></TH></TR>"
+    "<TBODY ID='mlist'><TR><TD COLSPAN=4 CLASS='CENTER'>Loading...</TD></TR></TBODY>"
+  "</TABLE>"
+  "<TABLE>"
+    "<TR><TH COLSPAN=2 CLASS='HEADING'>Save Current Frequency</TH></TR>"
+    "<TR><TD CLASS='LABEL'>Slot</TD>"
+        "<TD><INPUT TYPE='NUMBER' ID='saveslot' MIN='1' VALUE='1' STYLE='width:5em'> "
+        "<BUTTON ONCLICK='saveCur()'>Save here</BUTTON></TD></TR>"
+    "<TR><TD COLSPAN=2 CLASS='HINT'>Stores the currently tuned frequency and mode into the chosen slot.</TD></TR>"
+  "</TABLE>"
+  "<TABLE>"
+    "<TR><TH COLSPAN=2 CLASS='HEADING'>Manual Edit</TH></TR>"
+    "<TR><TD CLASS='LABEL'>Slot</TD><TD><INPUT TYPE='NUMBER' ID='eslot' MIN='1' VALUE='1' STYLE='width:5em'></TD></TR>"
+    "<TR><TD CLASS='LABEL'>Band</TD><TD><SELECT ID='eband'>" + bandOpts + "</SELECT></TD></TR>"
+    "<TR><TD CLASS='LABEL'>Frequency</TD><TD>"
+        "<INPUT TYPE='NUMBER' STEP='any' ID='efreq' STYLE='width:8em'> "
+        "<SELECT ID='eunit'><OPTION VALUE='k'>kHz</OPTION><OPTION VALUE='M'>MHz</OPTION></SELECT></TD></TR>"
+    "<TR><TD CLASS='LABEL'>Mode</TD><TD><SELECT ID='emode'>" + modeOpts + "</SELECT></TD></TR>"
+    "<TR><TD COLSPAN=2 CLASS='CENTER'><BUTTON ONCLICK='setSlot()'>Write slot</BUTTON></TD></TR>"
+  "</TABLE>"
+"</DIV></DIV>";
+
+  // ---- Config tab ---------------------------------------------------------
+  body +=
+"<DIV ID='config' CLASS='pane'><DIV CLASS='wrap'>" + webConfigBody() + "</DIV></DIV>";
+
+  // ---- Scripts ------------------------------------------------------------
+  body +=
 "<SCRIPT>"
-"function sset(k,v){fetch('/api/set?'+k+'='+encodeURIComponent(v));}"
-"function sel(id,v){var e=document.getElementById(id);if(e&&e!==document.activeElement)e.value=v;}"
-"function load(){fetch('/api/status').then(r=>r.json()).then(d=>{"
-  "sel('brt',d.brt);sel('sleep',d.sleep);sel('theme',d.theme);sel('ui',d.ui);"
-  "sel('sleepmode',d.sleepMode);sel('rds',d.rdsMode);sel('region',d.region);sel('utc',d.utc);"
-  "sel('usb',d.usb);sel('ble',d.ble);sel('wifi',d.wifi);"
-  "var z=document.getElementById('zoom');if(z!==document.activeElement)z.checked=d.zoom;"
-  "var s=document.getElementById('scroll');if(s!==document.activeElement)s.checked=d.scroll;"
-  "document.getElementById('brtv').textContent=d.brt;"
-  "document.getElementById('sleepv').textContent=d.sleep?d.sleep+'s':'Off';"
+"var WP=" + String(WATERFALL_POINTS) + ";"
+"var lastUnit='MHz',gFreqHz=0,gFm=true;"
+"function $(i){return document.getElementById(i);}"
+"function txt(i,v){var e=$(i);if(e)e.textContent=v;}"
+"function cmd(c){fetch('/api/cmd?c='+encodeURIComponent(c));}"
+"function setVal(k,v){fetch('/api/set?'+k+'='+encodeURIComponent(v));}"
+"function setStep(khz){fetch('/api/set?step='+khz);}"
+"function fmtFreq(s){var p=(''+s).split('.');p[0]=p[0].replace(/\\B(?=(\\d{3})+(?!\\d))/g,'\\u2009');return p.join('.');}"
+"function setFreq(){var s=$('freqval').value.replace(/[\\s\\u2009,]/g,'');var v=parseFloat(s);if(isNaN(v))return;"
+  "var hz=lastUnit=='MHz'?Math.round(v*1e6):Math.round(v*1000);fetch('/api/freq?hz='+hz);}"
+"function tuneHz(hz){fetch('/api/freq?hz='+Math.round(hz));}"
+/* ---- tabs ---- */
+"var specActive=false;"
+"function showTab(t){var ps=document.querySelectorAll('.pane');for(var i=0;i<ps.length;i++)ps[i].classList.toggle('on',ps[i].id===t);"
+  "var as=document.querySelectorAll('.nav A');for(var i=0;i<as.length;i++)as[i].classList.toggle('on',as[i].getAttribute('data-tab')===t);"
+  "specActive=(t==='spectrum');if(specActive){fitCanvas();redraw();if(specRun&&!scanning)scanOnce();}}"
+/* ---- control helpers ---- */
+"function fmtStep(k){return k>=1000?((k%1000?(k/1000).toFixed(1):(k/1000))+'M'):(k+'k');}"
+"var lastSteps='';"
+"function renderSteps(a){if(!a)return;var key=a.join(',');if(key===lastSteps)return;lastSteps=key;"
+  "var c=$('stepbtns');if(!c)return;c.innerHTML='';"
+  "for(var i=0;i<a.length;i++){var b=document.createElement('BUTTON');b.textContent=fmtStep(a[i]);"
+  "b.onclick=(function(k){return function(){setStep(k);};})(a[i]);c.appendChild(b);}}"
+"var curAgcAuto=false,curMuted=false;"
+"function toggleAgc(){setVal('agc',curAgcAuto?0:1);}"
+"function toggleMute(){setVal('mute',curMuted?0:1);}"
+"var lastModes='';"
+"function renderModes(d){if(!d.modes)return;var c=$('modebtns');if(!c)return;"
+  "var key=d.modes.map(function(m){return m.i;}).join(',');"
+  "if(key!==lastModes){lastModes=key;c.innerHTML='';"
+    "d.modes.forEach(function(m){var b=document.createElement('BUTTON');b.textContent=m.n;b.setAttribute('data-i',m.i);"
+    "b.onclick=(function(i){return function(){setVal('mode',i);};})(m.i);c.appendChild(b);});}"
+  "var bs=c.children;for(var i=0;i<bs.length;i++){bs[i].classList.toggle('acc',+bs[i].getAttribute('data-i')===d.modeIdx);}}"
+"var lastBands='';"
+"function fmt1(x){return x%1?x.toFixed(1):x.toFixed(0);}"
+"function bandRange(b){if(b.fm)return fmt1(b.lo/100)+' ~ '+fmt1(b.hi/100)+' MHz';"
+  "if(b.hi>=1000000)return fmt1(b.lo/1000)+' ~ '+fmt1(b.hi/1000)+' MHz';"
+  "return fmtFreq(b.lo)+' ~ '+fmtFreq(b.hi)+' kHz';}"
+"function renderBands(d){if(!d.bands)return;var sel=$('bandsel');if(!sel)return;"
+  "var key=d.bands.map(function(b){return b.i;}).join(',');"
+  "if(key!==lastBands&&sel!==document.activeElement){lastBands=key;sel.innerHTML='';"
+    "d.bands.forEach(function(b){var o=document.createElement('OPTION');o.value=b.i;"
+    "o.textContent=b.n+' ('+bandRange(b)+')';sel.appendChild(o);});}"
+  "if(sel!==document.activeElement)sel.value=d.bandIdx;}"
+"function grp(p){return p>=66?'fill g':p>=33?'fill a':'fill r';}"
+"function meter(fi,vi,p,t){var f=$(fi);if(!f)return;p=Math.max(0,Math.min(100,p));"
+  "f.style.width=p+'%';f.className=grp(p);txt(vi,t);}"
+"function bdg(id,on,warn){var e=$(id);if(e)e.className='badge'+(on?(warn?' warn':' on'):'');}"
+/* ---- status poll ---- */
+"function poll(){fetch('/api/status').then(r=>r.json()).then(d=>{"
+  "lastUnit=d.unit;gFm=(d.unit=='MHz');gFreqHz=d.freqHz;"
+  "txt('resv','');"
+  "var fe=$('freq');if(fe)fe.innerHTML=fmtFreq(d.freq)+\"<span class='u'>\"+d.unit+\"</span>\";"
+  "var me=$('meta');if(me)me.innerHTML='<b>'+d.band+'</b> &middot; '+d.mode;"
+  "txt('setunit',d.unit);txt('sethint','Enter the frequency in '+d.unit+'.');"
+  "var fq=$('freqval');if(fq){fq.placeholder='Set frequency ('+d.unit+')';if(fq!==document.activeElement)fq.value=fmtFreq(d.freq);}"
+  "meter('rssiFill','rssiVal',d.rssi/90*100,d.rssi+' dB\\u00b5V');"
+  "meter('snrFill','snrVal',d.snr/30*100,d.snr+' dB');"
+  "meter('battFill','battVal',(d.batt-3.0)/1.2*100,d.batt+' V');"
+  "bdg('bdgWifi',d.wifi>0);bdg('bdgBle',d.ble>0);bdg('bdgRds',!!(d.station&&d.station.length));"
+  "bdg('bdgMorse',d.morse>0);bdg('bdgOvr',d.override,true);bdg('bdgMute',d.muted,true);"
+  "txt('step',d.step);txt('bw',d.bw);txt('vol',d.muted?'Muted':d.vol);txt('agc',d.agcAuto?'AGC':('Att '+d.agc));"
+  "var sb=$('stepbox');if(sb)sb.textContent=d.step;renderSteps(d.steps);"
+  "curAgcAuto=!!d.agcAuto;curMuted=!!d.muted;"
+  "var ab=$('agcbtn');if(ab)ab.classList.toggle('acc',curAgcAuto);"
+  "var mb=$('mutebtn');if(mb)mb.classList.toggle('acc',curMuted);"
+  "renderModes(d);renderBands(d);"
+  "txt('station',d.station||'-');txt('rt',d.rt||'-');txt('morsetext',d.morseText||'-');"
+  "var st=(d.station||'').trim(),rtx=(d.rt||'').trim();"
+  "var ts=$('topStation');if(ts){ts.textContent=st;ts.style.display=st?'block':'none';}"
+  "var trt=$('topRt');if(trt){trt.textContent=rtx;trt.style.display=rtx?'block':'none';}"
+  "var ms=$('morse');if(ms&&ms!==document.activeElement)ms.value=d.morse;"
+  "var ov=$('override');if(ov&&ov!==document.activeElement)ov.checked=d.override;"
+  "var mh=$('morsehint');if(mh)mh.style.color=(d.morse==2&&!d.morseAudio)?'var(--bad)':'';"
+  "cfgApply(d);"
   "}).catch(e=>{});}"
-"setInterval(load,3000);load();"
-"</SCRIPT>"
-"</DIV>"
-);
+/* ---- config ---- */
+"function sset(k,v){fetch('/api/set?'+k+'='+encodeURIComponent(v));}"
+"function csel(id,v){var e=$(id);if(e&&e!==document.activeElement)e.value=v;}"
+"function cfgApply(d){csel('brt',d.brt);csel('sleep',d.sleep);csel('theme',d.theme);csel('ui',d.ui);"
+  "csel('sleepmode',d.sleepMode);csel('rds',d.rdsMode);csel('region',d.region);csel('utc',d.utc);"
+  "csel('usb',d.usb);csel('ble',d.ble);csel('wifi',d.wifi);"
+  "var z=$('zoom');if(z&&z!==document.activeElement)z.checked=d.zoom;"
+  "var s=$('scroll');if(s&&s!==document.activeElement)s.checked=d.scroll;"
+  "var bv=$('brtv');if(bv)bv.textContent=d.brt;var sv=$('sleepv');if(sv)sv.textContent=d.sleep?d.sleep+'s':'Off';}"
+"function cfgLoad(){poll();}"
+/* ---- memory ---- */
+"function mfmt(hz,m){return m=='FM'?(hz/1e6).toFixed(2)+' MHz':(hz/1000).toFixed(0)+' kHz';}"
+"function mload(){fetch('/api/memory').then(r=>r.json()).then(d=>{"
+  "var t=$('mlist');if(!t)return;t.innerHTML='';"
+  "txt('mcount','('+d.used.length+'/'+d.total+')');"
+  "if(!d.used.length){t.innerHTML=\"<TR><TD COLSPAN=4 CLASS='CENTER'>No stations stored</TD></TR>\";return;}"
+  "d.used.forEach(function(m){var tr=document.createElement('tr');"
+    "tr.innerHTML=\"<TD CLASS='LABEL'>\"+(m.s<10?'0':'')+m.s+\"</TD><TD>\"+mfmt(m.f,m.m)+\"</TD>\"+"
+    "\"<TD>\"+m.b+' '+m.m+\"</TD><TD><BUTTON onclick='act(\\\"tune\\\",\"+m.s+\")'>Tune</BUTTON> \"+"
+    "\"<BUTTON onclick='act(\\\"clear\\\",\"+m.s+\")'>Clear</BUTTON></TD>\";t.appendChild(tr);});"
+  "}).catch(e=>{});}"
+"function mrefresh(){setTimeout(mload,600);}"
+"function act(a,s){fetch('/api/mem?action='+a+'&slot='+s).then(mrefresh);}"
+"function saveCur(){var s=$('saveslot').value;fetch('/api/mem?action=save&slot='+s).then(mrefresh);}"
+"function setSlot(){var s=$('eslot').value,b=$('eband').value,m=$('emode').value,v=parseFloat($('efreq').value);"
+  "if(isNaN(v)){alert('Enter a frequency');return;}"
+  "var hz=$('eunit').value=='M'?Math.round(v*1e6):Math.round(v*1000);"
+  "fetch('/api/mem?action=set&slot='+s+'&band='+encodeURIComponent(b)+'&hz='+hz+'&mode='+encodeURIComponent(m)).then(mrefresh);}"
+/* ---- colormaps ---- */
+"var CM={viridis:[[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]],"
+  "inferno:[[0,0,4],[87,16,110],[188,55,84],[249,142,9],[252,255,164]],"
+  "gray:[[0,0,0],[64,64,64],[128,128,128],[192,192,192],[255,255,255]]};"
+"function cmap(v){v=Math.max(0,Math.min(0.999,v));var st=CM[$('cmap').value]||CM.viridis;"
+  "var f=v*(st.length-1),i=Math.floor(f),t=f-i,a=st[i],b=st[i+1];"
+  "return[a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t];}"
+/* ---- spectrum/scan ---- */
+"function lockRadio(on){var nn=document.querySelectorAll('.lockable');"
+  "for(var i=0;i<nn.length;i++)nn[i].classList.toggle('locked',on);"
+  "var ban=$('wfban');if(ban)ban.style.display=on?'block':'none';}"
+"var specRun=false,scanning=false,scanPollT=null,lastScan=null;"
+"var peakHold=null,avgAcc=null,avgN=0,wfRows=[],detPeaks=[];"
+"function setRunBtn(){var b=$('runbtn');if(b){b.textContent=specRun?'Stop':'Run';b.classList.toggle('acc',specRun);}txt('specstat',specRun?'running':'idle');}"
+"function setRun(on){specRun=on;setRunBtn();lockRadio(on);"
+  "fetch('/api/scan?auto='+(on?1:0)).catch(function(){});"
+  "if(on){if(!scanning)scanOnce();}else if(scanPollT){clearTimeout(scanPollT);scanPollT=null;}}"
+"function single(){if(specRun)setRun(false);if(!scanning)scanOnce();}"
+"function setStepPreset(s){curStep=s;var bs=document.querySelectorAll('.sdrbar BUTTON[data-sp]');"
+  "for(var i=0;i<bs.length;i++)bs[i].classList.toggle('acc',+bs[i].getAttribute('data-sp')===s);"
+  "$('spaninp').value='';wfRows=[];fetch('/api/scan?span='+s).catch(function(){});}"
+"function setSpanKHz(){var v=parseFloat($('spaninp').value);if(isNaN(v)||v<=0)return;"
+  "var uk=gFm?10:1,pts=lastScan?lastScan.count:WP;var st=Math.round(v/pts/uk);"
+  "st=Math.max(1,Math.min(200,st));curStep=st;wfRows=[];fetch('/api/scan?span='+st).catch(function(){});}"
+"var curStep=2;"
+"function resetPeak(){peakHold=null;avgAcc=null;avgN=0;redraw();}"
+"function toggleWf(){fitCanvas();redraw();}"
+"function scanOnce(){if(scanning)return;scanning=true;txt('specstat',specRun?'running':'sweep');"
+  "fetch('/api/scan?run=1'+(specRun?'&auto=1':'')).then(function(){pollScan(0);}).catch(function(){"
+  "scanPollT=setTimeout(function(){pollScan(0);},150);});}"
+"function pollScan(tries){scanPollT=null;fetch('/api/scan').then(r=>r.json()).then(d=>{"
+  "if(d.busy){if(tries<240)scanPollT=setTimeout(function(){pollScan(tries+1);},120);else scanDone();return;}"
+  "if(d.count>0)procScan(d);scanDone();"
+  "if(specRun&&specActive)scanPollT=setTimeout(scanOnce,60);"
+  "}).catch(function(){if(tries<240)scanPollT=setTimeout(function(){pollScan(tries+1);},120);else scanDone();});}"
+"function scanDone(){scanning=false;if(!specRun)txt('specstat','idle');}"
+"function procScan(d){lastScan=d;var n=d.count,a=d.rssi;"
+  "if(!peakHold||peakHold.length!==n){peakHold=a.slice();avgAcc=a.slice();avgN=1;}"
+  "else{for(var i=0;i<n;i++){if(a[i]>peakHold[i])peakHold[i]=a[i];avgAcc[i]+=a[i];}avgN++;}"
+  "detectPeaks(d);pushWf(d);redraw();updateReadout(d);}"
+"function detectPeaks(d){var a=d.rssi,n=d.count;detPeaks=[];if(n<3)return;"
+  "var srt=a.slice().sort(function(x,y){return x-y;});var floor=srt[Math.floor(n*0.4)];"
+  "var mx=srt[n-1],th=floor+Math.max(4,(mx-floor)*0.35);"
+  "for(var i=1;i<n-1;i++){if(a[i]>=th&&a[i]>=a[i-1]&&a[i]>a[i+1])detPeaks.push(i);}}"
+"function pushWf(d){if(!$('tWf').checked)return;var c=$('wfs'),W=c.width;if(!W)return;"
+  "var a=d.rssi,n=d.count,mn=Math.min.apply(null,a),mx=Math.max.apply(null,a),rg=(mx-mn)||1;"
+  "var row=new Float32Array(W);for(var i=0;i<W;i++){var fi=i/(W-1)*(n-1),lo=Math.floor(fi),t=fi-lo;"
+  "var v0=a[lo],v1=a[Math.min(n-1,lo+1)];row[i]=((v0+(v1-v0)*t)-mn)/rg;}"
+  "wfRows.unshift(row);if(wfRows.length>c.height)wfRows.pop();}"
+/* frequency<->x mapping shared by spectrum and waterfall */
+"function xToHz(x,W){if(!lastScan)return 0;var n=lastScan.count;var fi=x/W*(n-1);"
+  "return lastScan.startHz+lastScan.stepHz*fi;}"
+"function hzToX(hz,W){if(!lastScan)return -1;var n=lastScan.count;"
+  "var fi=(hz-lastScan.startHz)/lastScan.stepHz;return fi/(n-1)*W;}"
+"function gridLines(){if(!lastScan)return[];var n=lastScan.count;var lo=lastScan.startHz,hi=lastScan.startHz+lastScan.stepHz*(n-1);"
+  "var span=hi-lo;if(span<=0)return[];var steps=[1e5,2e5,5e5,1e6,2e6,5e6,1e7];var st=steps[0];"
+  "for(var i=0;i<steps.length;i++){if(span/steps[i]<=8){st=steps[i];break;}st=steps[i];}"
+  "var g=[],f=Math.ceil(lo/st)*st;for(;f<=hi;f+=st)g.push(f);return g;}"
+"function fmtMHz(hz){return(hz/1e6).toFixed(hz%1e6?2:1);}"
+"function redraw(){drawSpec();drawWf();}"
+"function drawSpec(){var c=$('spec');if(!c)return;var x=c.getContext('2d'),W=c.width,H=c.height;"
+  "x.clearRect(0,0,W,H);x.fillStyle='#070b10';x.fillRect(0,0,W,H);"
+  "if(!lastScan){return;}var d=lastScan,n=d.count;"
+  "var all=d.rssi.concat(peakHold||[]);var mn=Math.min.apply(null,all),mx=Math.max.apply(null,all);var rg=(mx-mn)||1;"
+  "var pad=18;function Y(v){return H-pad-((v-mn)/rg)*(H-pad*2);}"
+  /* grid + labels */
+  "x.strokeStyle='rgba(255,178,74,0.25)';x.fillStyle='#8a99a8';x.font='10px monospace';x.lineWidth=1;"
+  "var gl=gridLines(),lab=$('tLabels').checked;"
+  "for(var i=0;i<gl.length;i++){var gx=Math.round(hzToX(gl[i],W))+0.5;x.beginPath();x.moveTo(gx,0);x.lineTo(gx,H);x.stroke();"
+  "if(lab){x.fillText(fmtMHz(gl[i])+' MHz',gx+2,11);}}"
+  /* SNR trace (own scale) */
+  "if($('tSnr').checked&&d.snr){var s=d.snr,smn=Math.min.apply(null,s),smx=Math.max.apply(null,s),srg=(smx-smn)||1;"
+  "x.strokeStyle='#37d67a';x.lineWidth=1.5;x.beginPath();"
+  "for(var i=0;i<n;i++){var px=i/(n-1)*W,py=H-pad-((s[i]-smn)/srg)*(H-pad*2)*0.85;i?x.lineTo(px,py):x.moveTo(px,py);}x.stroke();}"
+  /* Avg trace */
+  "if($('tAvg').checked&&avgAcc&&avgN){x.strokeStyle='#16c79a';x.lineWidth=1;x.beginPath();"
+  "for(var i=0;i<n;i++){var px=i/(n-1)*W,py=Y(avgAcc[i]/avgN);i?x.lineTo(px,py):x.moveTo(px,py);}x.stroke();}"
+  /* Peak hold */
+  "if($('tPeak').checked&&peakHold){x.strokeStyle='#ffb24a';x.lineWidth=1.5;x.beginPath();"
+  "for(var i=0;i<n;i++){var px=i/(n-1)*W,py=Y(peakHold[i]);i?x.lineTo(px,py):x.moveTo(px,py);}x.stroke();}"
+  /* current level (blue, filled) */
+  "x.strokeStyle='#5aa9ff';x.fillStyle='rgba(90,169,255,0.18)';x.lineWidth=1.5;x.beginPath();x.moveTo(0,H);"
+  "for(var i=0;i<n;i++){var px=i/(n-1)*W,py=Y(d.rssi[i]);x.lineTo(px,py);}x.lineTo(W,H);x.closePath();x.fill();"
+  "x.beginPath();for(var i=0;i<n;i++){var px=i/(n-1)*W,py=Y(d.rssi[i]);i?x.lineTo(px,py):x.moveTo(px,py);}x.stroke();"
+  /* detected peaks */
+  "x.fillStyle='#ffd27a';for(var i=0;i<detPeaks.length;i++){var pi=detPeaks[i],px=pi/(n-1)*W,py=Y(d.rssi[pi]);"
+  "x.beginPath();x.arc(px,py-4,2.5,0,7);x.fill();}"
+  /* tuned marker (dashed) */
+  "var tx=hzToX(gFreqHz,W);if(tx>=0&&tx<=W){x.strokeStyle='#e7eef5';x.setLineDash([5,4]);x.lineWidth=1;"
+  "x.beginPath();x.moveTo(tx,0);x.lineTo(tx,H);x.stroke();x.setLineDash([]);"
+  "if(lab){x.fillStyle='#e7eef5';x.fillText('Tuned '+fmtMHz(gFreqHz)+' MHz',Math.min(tx+3,W-90),H-4);}}}"
+"function drawWf(){var c=$('wfs');if(!c)return;c.style.display=$('tWf').checked?'block':'none';"
+  "if(!$('tWf').checked)return;var x=c.getContext('2d'),W=c.width,H=c.height;"
+  "var img=x.createImageData(W,H);for(var y=0;y<H;y++){var row=wfRows[y];for(var i=0;i<W;i++){"
+  "var v=row?row[i]:0,col=cmap(v),o=(y*W+i)*4;img.data[o]=col[0];img.data[o+1]=col[1];img.data[o+2]=col[2];img.data[o+3]=255;}}"
+  "x.putImageData(img,0,0);"
+  "x.fillStyle='#cfe2f5';x.font='10px monospace';var gl=gridLines();"
+  "for(var i=0;i<gl.length;i++){var gx=Math.round(hzToX(gl[i],W));x.strokeStyle='rgba(255,255,255,0.15)';"
+  "x.beginPath();x.moveTo(gx+0.5,0);x.lineTo(gx+0.5,H);x.stroke();"
+  "if($('tLabels').checked)x.fillText(fmtMHz(gl[i]),gx+2,H-3);}}"
+"function updateReadout(d){var n=d.count,lo=d.startHz,hi=d.startHz+d.stepHz*(n-1);var ctr=(lo+hi)/2;"
+  "txt('readout','');var r=$('readout');if(r)r.innerHTML='Center <b>'+fmtMHz(ctr)+' MHz</b> &nbsp; "
+  "Span <b>'+((hi-lo)/1e6).toFixed(3)+' MHz</b> &nbsp; Resolution <b>'+(d.stepHz/1000)+' kHz/pt</b> &nbsp; <b>'+n+'</b> pts';"
+  "txt('resv',(d.stepHz/1000));}"
+/* canvas click -> tune */
+"function canvClick(c,ev){if(!lastScan)return;var rc=c.getBoundingClientRect();var x=(ev.clientX-rc.left)/rc.width*c.width;"
+  "var hz=xToHz(x,c.width);var n=lastScan.count,best=-1,bd=1e18;"
+  "for(var i=0;i<detPeaks.length;i++){var phz=lastScan.startHz+lastScan.stepHz*detPeaks[i];var dd=Math.abs(phz-hz);"
+  "if(dd<bd){bd=dd;best=phz;}}"
+  "var span=lastScan.stepHz*(n-1);if(best>=0&&bd<span*0.03)hz=best;tuneHz(hz);}"
+"function fitCanvas(){var s=$('spec'),w=$('wfs');if(!s)return;var W=s.clientWidth||800;"
+  "s.width=W;s.height=300;w.width=W;w.height=240;}"
+/* ---- init ---- */
+"window.addEventListener('resize',function(){if(specActive){fitCanvas();redraw();}});"
+"$('spec').addEventListener('click',function(e){canvClick(this,e);});"
+"$('wfs').addEventListener('click',function(e){canvClick(this,e);});"
+"var p=location.pathname;if(p.indexOf('memory')>=0)showTab('memory');else if(p.indexOf('config')>=0)showTab('config');"
+"else{fitCanvas();}"
+"setStepPreset(2);setRunBtn();txt('specstat','idle');"
+"setInterval(poll,1000);poll();setInterval(mload,3000);mload();scanOnce();"
+"</SCRIPT>";
+
+  return webPage(body);
 }
