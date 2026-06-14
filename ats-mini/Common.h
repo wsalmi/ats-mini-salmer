@@ -220,7 +220,7 @@ bool drawBattery(int x, int y);
 // points==0 / tuneDelay==0 keep the full-quality defaults (one-shot scan)
 // holdMute=true skips the per-scan mute/restore so the caller can keep audio
 // muted across multiple scans (used by the web waterfall mode)
-void scanRun(uint16_t centerFreq, uint16_t step, uint16_t points = 0, uint16_t tuneDelay = 0, bool holdMute = false);
+void scanRun(uint16_t centerFreq, uint16_t step, uint16_t points = 0, uint16_t tuneDelay = 0, bool holdMute = false, uint16_t startFreq = 0);
 float scanGetRSSI(uint16_t freq);
 float scanGetSNR(uint16_t freq);
 bool scanIsDone();

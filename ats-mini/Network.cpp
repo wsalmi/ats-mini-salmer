@@ -115,6 +115,10 @@ static volatile bool     webWaterfallOn = false;     // TRUE: waterfall mode act
 static volatile uint32_t webWaterfallLastReq = 0;    // millis() of last scan request
 static bool              webWaterfallMuted = false;  // TRUE: we hold the mute
 static volatile int      webWaterfallStep = 10;      // Scan step (band units) = span/points
+// Explicit scan window [lo,hi] in band freq units (0 = unset -> center-based).
+// Set from /api/scan?lo=&hi= (Hz); the step is derived to fit WATERFALL_POINTS.
+static volatile int      webWaterfallLo = 0;
+static volatile int      webWaterfallHi = 0;
 
 bool webWaterfallActive() { return webWaterfallOn; }
 
@@ -335,7 +339,27 @@ int webRemoteLoop()
   if(webPendingScan)
   {
     webPendingScan = false;
-    scanRun(currentFrequency, (uint16_t)webWaterfallStep, WATERFALL_POINTS, WATERFALL_TUNE_DELAY, webWaterfallOn);
+    const Band *b = getCurrentBand();
+    int lo = webWaterfallLo, hi = webWaterfallHi;
+    // Clamp the requested [lo,hi] window to the current band edges.
+    if(lo>0 && hi>0)
+    {
+      lo = clampInt(lo, b->minimumFreq, b->maximumFreq);
+      hi = clampInt(hi, b->minimumFreq, b->maximumFreq);
+    }
+    if(lo>0 && hi>lo)
+    {
+      // Explicit window: derive a step that spans [lo,hi] over WATERFALL_POINTS.
+      int pts  = WATERFALL_POINTS;
+      int step = (hi - lo + (pts - 2)) / (pts - 1);  // ceil((hi-lo)/(pts-1))
+      if(step < 1) step = 1;
+      int center = (lo + hi) / 2;
+      scanRun((uint16_t)center, (uint16_t)step, pts, WATERFALL_TUNE_DELAY, webWaterfallOn, (uint16_t)lo);
+    }
+    else
+    {
+      scanRun(currentFrequency, (uint16_t)webWaterfallStep, WATERFALL_POINTS, WATERFALL_TUNE_DELAY, webWaterfallOn);
+    }
     event |= REMOTE_CHANGED;
   }
 
@@ -723,7 +747,21 @@ static void webInit()
     // Waterfall span control: the per-point scan step in band units. The covered
     // span is WATERFALL_POINTS * step (FM units are 10kHz, AM/SSB units are kHz).
     if((pa = request->getParam("span", true)) || (pa = request->getParam("span")))
+    {
       webWaterfallStep = clampInt(pa->value().toInt(), 1, 200);
+      // Selecting a per-point span preset reverts to the centered window.
+      webWaterfallLo = webWaterfallHi = 0;
+    }
+    // Explicit scan window in Hz. Converted to band units (FM=10kHz, AM/SSB=1kHz).
+    {
+      bool fm = currentMode==FM;
+      uint32_t uhz = fm ? 10000 : 1000;
+      const AsyncWebParameter *pl, *ph;
+      if((pl = request->getParam("lo", true)) || (pl = request->getParam("lo")))
+        webWaterfallLo = (int)((uint32_t)strtoul(pl->value().c_str(), nullptr, 10) / uhz);
+      if((ph = request->getParam("hi", true)) || (ph = request->getParam("hi")))
+        webWaterfallHi = (int)((uint32_t)strtoul(ph->value().c_str(), nullptr, 10) / uhz);
+    }
     if(request->hasParam("run") || request->hasParam("run", true))
     {
       webPendingScan = true;
@@ -1423,12 +1461,15 @@ static const String webAppPage()
       "<BUTTON ID='runbtn' CLASS='acc sp' ONCLICK='setRun(!specRun)'>Run</BUTTON>"
       "<BUTTON CLASS='sp' ONCLICK='single()'>Single</BUTTON>"
       "<SPAN CLASS='sp'>&nbsp;</SPAN>"
-      "<BUTTON CLASS='sp' DATA-SP='1' ONCLICK='setStepPreset(1)'>Fast</BUTTON>"
-      "<BUTTON CLASS='sp acc' DATA-SP='2' ONCLICK='setStepPreset(2)'>Medium</BUTTON>"
-      "<BUTTON CLASS='sp' DATA-SP='4' ONCLICK='setStepPreset(4)'>Wide</BUTTON>"
-      "<SPAN CLASS='sp'>Span</SPAN>"
-      "<INPUT CLASS='sp' TYPE='NUMBER' ID='spaninp' MIN='10' STEP='10' ONCHANGE='setSpanKHz()'>"
-      "<SPAN CLASS='sp'>kHz</SPAN>"
+      "<BUTTON CLASS='sp' DATA-SP='2000' ONCLICK='winPreset(2000)'>Narrow</BUTTON>"
+      "<BUTTON CLASS='sp' DATA-SP='6000' ONCLICK='winPreset(6000)'>Medium</BUTTON>"
+      "<BUTTON CLASS='sp' DATA-SP='20000' ONCLICK='winPreset(20000)'>Wide</BUTTON>"
+      "<SPAN CLASS='sp'>Init</SPAN>"
+      "<INPUT CLASS='sp' TYPE='NUMBER' STEP='any' ID='loinp' ONCHANGE='setRange()'>"
+      "<SELECT CLASS='sp' ID='lou' ONCHANGE=\"convUnit('lo')\"><OPTION>kHz</OPTION><OPTION>MHz</OPTION></SELECT>"
+      "<SPAN CLASS='sp'>End</SPAN>"
+      "<INPUT CLASS='sp' TYPE='NUMBER' STEP='any' ID='hiinp' ONCHANGE='setRange()'>"
+      "<SELECT CLASS='sp' ID='hiu' ONCHANGE=\"convUnit('hi')\"><OPTION>kHz</OPTION><OPTION>MHz</OPTION></SELECT>"
       "<SPAN CLASS='sp'>Res <B ID='resv'>--</B> kHz</SPAN>"
       "<LABEL><INPUT TYPE='CHECKBOX' ID='tSnr' CHECKED ONCHANGE='redraw()'>SNR</LABEL>"
       "<LABEL><INPUT TYPE='CHECKBOX' ID='tPeak' CHECKED ONCHANGE='redraw()'>Peak</LABEL>"
@@ -1714,13 +1755,28 @@ static const String webAppPage()
   "fetch('/api/scan?auto='+(on?1:0)).catch(function(){});"
   "if(on){if(!scanning)scanOnce();}else if(scanPollT){clearTimeout(scanPollT);scanPollT=null;}}"
 "function single(){if(specRun)setRun(false);if(!scanning)scanOnce();}"
-"function setStepPreset(s){curStep=s;var bs=document.querySelectorAll('.sdrbar BUTTON[data-sp]');"
-  "for(var i=0;i<bs.length;i++)bs[i].classList.toggle('acc',+bs[i].getAttribute('data-sp')===s);"
-  "$('spaninp').value='';wfRows=[];fetch('/api/scan?span='+s).catch(function(){});}"
-"function setSpanKHz(){var v=parseFloat($('spaninp').value);if(isNaN(v)||v<=0)return;"
-  "var uk=gFm?10:1,pts=lastScan?lastScan.count:WP;var st=Math.round(v/pts/uk);"
-  "st=Math.max(1,Math.min(200,st));curStep=st;wfRows=[];fetch('/api/scan?span='+st).catch(function(){});}"
-"var curStep=2;"
+/* Init/End window controls. Each field has its own kHz/MHz unit. The window is
+   stored server-side (lo/hi in Hz) so subsequent run sweeps reuse it. */
+"var rangeInit=false,prevLou='kHz',prevHiu='kHz';"
+"function uHz(v,u){return u=='MHz'?Math.round(v*1e6):Math.round(v*1000);}"
+"function fmtIn(hz,u){return u=='MHz'?(hz/1e6).toFixed(3):(hz/1000).toFixed(0);}"
+"function applyWin(lh,hh){if(lh>=hh)return;wfRows=[];fetch('/api/scan?lo='+lh+'&hi='+hh).catch(function(){});if(!scanning)scanOnce();}"
+"function setRange(){var lo=parseFloat($('loinp').value),hi=parseFloat($('hiinp').value);"
+  "if(isNaN(lo)||isNaN(hi))return;applyWin(uHz(lo,$('lou').value),uHz(hi,$('hiu').value));}"
+"function convUnit(w){var sel=$(w+'u'),inp=$(w+'inp'),prev=(w=='lo'?prevLou:prevHiu),v=parseFloat(inp.value);"
+  "if(!isNaN(v))inp.value=fmtIn(uHz(v,prev),sel.value);"
+  "if(w=='lo')prevLou=sel.value;else prevHiu=sel.value;setRange();}"
+"function winPreset(wkhz){var c=gFreqHz||(lastScan?(lastScan.startHz+lastScan.stepHz*(lastScan.count-1)/2):0);if(!c)return;"
+  "var half=wkhz*500,lo=Math.max(0,c-half),hi=c+half;"
+  "var u=gFm?'MHz':'kHz';$('lou').value=u;$('hiu').value=u;prevLou=u;prevHiu=u;"
+  "$('loinp').value=fmtIn(lo,u);$('hiinp').value=fmtIn(hi,u);"
+  "var bs=document.querySelectorAll('.sdrbar BUTTON[data-sp]');for(var i=0;i<bs.length;i++)bs[i].classList.toggle('acc',+bs[i].getAttribute('data-sp')===wkhz);"
+  "applyWin(Math.round(lo),Math.round(hi));}"
+"function refreshRangeFields(d){var lou=$('lou'),hiu=$('hiu');if(!lou)return;"
+  "if(!rangeInit){var u=gFm?'MHz':'kHz';lou.value=u;hiu.value=u;prevLou=u;prevHiu=u;rangeInit=true;}"
+  "var endHz=d.startHz+d.stepHz*(d.count-1),li=$('loinp'),hi=$('hiinp');"
+  "if(li!==document.activeElement)li.value=fmtIn(d.startHz,lou.value);"
+  "if(hi!==document.activeElement)hi.value=fmtIn(endHz,hiu.value);}"
 "function resetPeak(){peakHold=null;avgAcc=null;avgN=0;redraw();}"
 "function toggleWf(){fitCanvas();redraw();}"
 "function scanOnce(){if(scanning)return;scanning=true;txt('specstat',specRun?'running':'sweep');"
@@ -1735,7 +1791,7 @@ static const String webAppPage()
 "function procScan(d){lastScan=d;var n=d.count,a=d.rssi;"
   "if(!peakHold||peakHold.length!==n){peakHold=a.slice();avgAcc=a.slice();avgN=1;}"
   "else{for(var i=0;i<n;i++){if(a[i]>peakHold[i])peakHold[i]=a[i];avgAcc[i]+=a[i];}avgN++;}"
-  "detectPeaks(d);pushWf(d);redraw();updateReadout(d);}"
+  "detectPeaks(d);pushWf(d);redraw();updateReadout(d);refreshRangeFields(d);}"
 "function detectPeaks(d){var a=d.rssi,n=d.count;detPeaks=[];if(n<3)return;"
   "var srt=a.slice().sort(function(x,y){return x-y;});var floor=srt[Math.floor(n*0.4)];"
   "var mx=srt[n-1],th=floor+Math.max(4,(mx-floor)*0.35);"
@@ -1826,7 +1882,7 @@ static const String webAppPage()
 "$('specstack').addEventListener('mouseleave',hoverOut);"
 "var p=location.pathname;if(p.indexOf('memory')>=0)showTab('memory');else if(p.indexOf('config')>=0)showTab('config');"
 "else showTab('spectrum');"
-"setStepPreset(2);setRunBtn();txt('specstat','idle');"
+"setRunBtn();txt('specstat','idle');"
 "setInterval(poll,1000);poll();setInterval(mload,3000);mload();scanOnce();"
 "</SCRIPT>";
 

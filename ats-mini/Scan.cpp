@@ -67,7 +67,7 @@ int scanGetCount()            { return(scanStatus==SCAN_DONE ? scanCount : 0); }
 uint8_t scanGetRawRSSI(int i) { return((i>=0 && i<scanCount) ? scanData[i].rssi : 0); }
 uint8_t scanGetRawSNR(int i)  { return((i>=0 && i<scanCount) ? scanData[i].snr  : 0); }
 
-static void scanInit(uint16_t centerFreq, uint16_t step)
+static void scanInit(uint16_t centerFreq, uint16_t step, uint16_t startFreq = 0)
 {
   scanStep    = step;
   scanCount   = 0;
@@ -79,7 +79,9 @@ static void scanInit(uint16_t centerFreq, uint16_t step)
   scanTime    = millis();
 
   const Band *band = getCurrentBand();
-  int freq = scanStep * (centerFreq / scanStep - scanPoints / 2);
+  // Explicit start frequency (startFreq>0) scans [startFreq, startFreq+step*(points-1)];
+  // otherwise the window is centered on centerFreq (legacy behavior).
+  int freq = startFreq ? (int)startFreq : scanStep * (centerFreq / scanStep - scanPoints / 2);
 
   // Adjust to band boundaries
   if(freq + scanStep * (scanPoints - 1) > band->maximumFreq)
@@ -149,7 +151,7 @@ static bool scanTickTime()
 //
 // Run entire scan once
 //
-void scanRun(uint16_t centerFreq, uint16_t step, uint16_t points, uint16_t tuneDelay, bool holdMute)
+void scanRun(uint16_t centerFreq, uint16_t step, uint16_t points, uint16_t tuneDelay, bool holdMute, uint16_t startFreq)
 {
   // Number of points to sample (0 = full-resolution one-shot scan)
   scanPoints = points ? (points > SCAN_POINTS ? SCAN_POINTS : points) : SCAN_POINTS;
@@ -164,7 +166,7 @@ void scanRun(uint16_t centerFreq, uint16_t step, uint16_t points, uint16_t tuneD
   // Save current frequency
   uint16_t curFreq = rx.getFrequency();
   // Scan the whole range
-  for(scanInit(centerFreq, step) ; scanTickTime(););
+  for(scanInit(centerFreq, step, startFreq) ; scanTickTime(););
   // Restore current frequency
   rx.setFrequency(curFreq);
   // Unmute the audio (unless the caller owns the mute)
