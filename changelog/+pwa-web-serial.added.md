@@ -1,0 +1,1 @@
+Added an offline-capable, installable Web Serial PWA (under `pwa/`, published to GitHub Pages at `/pwa/`) that controls the receiver over USB using the existing ad hoc serial protocol, plus a "Desktop App (USB)" link at the top of the device-served web page that opens it.

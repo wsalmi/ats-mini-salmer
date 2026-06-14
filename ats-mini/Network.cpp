@@ -911,6 +911,8 @@ static const String webStyleSheet()
   "border:1px solid transparent}"
 ".nav A:hover{color:var(--tx);background:var(--card)}"
 ".nav A.on{color:#0a0e13;background:var(--acc);font-weight:700}"
+".nav A.ext{color:var(--acc2);border:1px solid var(--bd)}"
+".nav A.ext:hover{color:#0a0e13;background:var(--acc2)}"
 ".wrap{max-width:860px;margin:0 auto;padding:1em}"
 ".card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:1em;"
   "margin:0 0 1em;box-shadow:var(--sh)}"
@@ -1042,6 +1044,7 @@ static const String webNav()
   for(int i=0 ; i<4 ; i++)
     n += "<A DATA-TAB='" + String(id[i]) + "' ONCLICK=\"showTab('" + String(id[i]) + "')\""
          + (i==0? " CLASS='on'":"") + ">" + lbl[i] + "</A>";
+  n += "<A HREF='https://wsalmi.github.io/ats-mini-salmer/pwa/' TARGET='_blank' REL='noopener' CLASS='ext'>Desktop App (USB)</A>";
   n += "</DIV></DIV>";
   return n;
 }

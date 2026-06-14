@@ -10,6 +10,7 @@ on:
       - 'CHANGELOG.md'
       - 'CONTRIBUTING.md'
       - '.github/workflows/docs.yml'
+      - 'pwa/**'
   push:
     branches:
       - main
@@ -19,6 +20,7 @@ on:
       - 'CHANGELOG.md'
       - 'CONTRIBUTING.md'
       - '.github/workflows/docs.yml'
+      - 'pwa/**'
   workflow_dispatch:
 
 jobs:
@@ -53,6 +55,11 @@ jobs:
       - name: Build the docs
         run: |
           uv run sphinx-build --fail-on-warning --nitpicky docs/source docs/build
+
+      - name: Bundle the Web Serial PWA alongside the docs
+        run: |
+          mkdir -p docs/build/pwa
+          cp -r pwa/. docs/build/pwa/
 
       - name: Upload the docs artifact
         id: artifact

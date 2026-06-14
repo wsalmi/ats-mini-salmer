@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0e13">
+  <meta name="description" content="Offline Web Serial PWA to control the ATS-Mini receiver over USB.">
+  <title>ATS-Mini Desktop (USB)</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="bar">
+    <div class="brand">ATS<span>Mini</span> <em>USB</em></div>
+    <div class="nav">
+      <button id="connectBtn" class="primary">Connect</button>
+      <button id="disconnectBtn" hidden>Disconnect</button>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div id="unsupported" class="card warnbox" hidden>
+      <strong>Web Serial not supported.</strong>
+      This app needs the Web Serial API, available in Chromium-based browsers
+      (Chrome, Edge, Opera) on desktop. Firefox and Safari are not supported.
+    </div>
+
+    <div id="status" class="card statusline">
+      <span class="dot off" id="dot"></span>
+      <span id="statusText">Not connected. Click <b>Connect</b> and pick the ATS-Mini serial port.</span>
+    </div>
+
+    <!-- Frequency readout -->
+    <div class="card freqcard">
+      <div class="freq"><span id="freq">--</span><span class="u" id="frequnit">MHz</span></div>
+      <div class="meta">
+        <b id="band">--</b> &nbsp;|&nbsp; <b id="mode">--</b> &nbsp;|&nbsp;
+        Step <b id="step">--</b> &nbsp;|&nbsp; BW <b id="bw">--</b>
+      </div>
+      <div class="meta">
+        Vol <b id="vol">--</b> &nbsp;|&nbsp; AGC <b id="agc">--</b> &nbsp;|&nbsp;
+        RSSI <b id="rssi">--</b> dBuV &nbsp;|&nbsp; SNR <b id="snr">--</b> dB &nbsp;|&nbsp;
+        Batt <b id="volt">--</b> V
+      </div>
+    </div>
+
+    <!-- Tuning -->
+    <div class="card">
+      <div class="ttl">Tuning</div>
+      <div class="seg big">
+        <button data-cmd="r">&laquo; Tune</button>
+        <button data-cmd="R">Tune &raquo;</button>
+      </div>
+      <div class="row">
+        <input type="number" id="freqInput" placeholder="Frequency in kHz (e.g. 7200)" inputmode="decimal">
+        <button id="setFreqBtn">Set</button>
+      </div>
+      <div class="hint">Sends <code>F&lt;Hz&gt;</code>. Must be within the current band unless override is on. In SSB the sub-kHz part sets the BFO.</div>
+      <div class="seg">
+        <button data-cmd="P" id="overrideBtn">Freq Override</button>
+        <button data-cmd="e">Encoder Click</button>
+        <button data-cmd="E">Short Press</button>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="card">
+      <div class="ttl">Controls</div>
+      <div class="grid">
+        <div class="ctl"><label>Band</label><div class="seg"><button data-cmd="b">&minus;</button><button data-cmd="B">+</button></div></div>
+        <div class="ctl"><label>Mode</label><div class="seg"><button data-cmd="m">&minus;</button><button data-cmd="M">+</button></div></div>
+        <div class="ctl"><label>Volume</label><div class="seg"><button data-cmd="v">&minus;</button><button id="muteBtn">Mute</button><button data-cmd="V">+</button></div></div>
+        <div class="ctl"><label>Step</label><div class="seg"><button data-cmd="s">&minus;</button><button data-cmd="S">+</button></div></div>
+        <div class="ctl"><label>Bandwidth</label><div class="seg"><button data-cmd="w">&minus;</button><button data-cmd="W">+</button></div></div>
+        <div class="ctl"><label>AGC / Att</label><div class="seg"><button data-cmd="a">&minus;</button><button data-cmd="A">+</button></div></div>
+        <div class="ctl"><label>Backlight</label><div class="seg"><button data-cmd="l">&minus;</button><button data-cmd="L">+</button></div></div>
+        <div class="ctl"><label>Sleep</label><div class="seg"><button data-cmd="O">On</button><button data-cmd="o">Off</button></div></div>
+      </div>
+    </div>
+
+    <!-- Console -->
+    <div class="card">
+      <div class="ttl">Serial Console</div>
+      <div class="row">
+        <input type="text" id="rawInput" placeholder="Raw command(s), e.g. RRR or F7200000" autocomplete="off">
+        <button id="rawSendBtn">Send</button>
+        <button id="clearLogBtn" class="ghost">Clear</button>
+      </div>
+      <pre id="log" class="log"></pre>
+    </div>
+
+    <!-- Help -->
+    <div class="card help">
+      <div class="ttl">About this app</div>
+      <ul>
+        <li><b>Chromium only.</b> Uses the Web Serial API (Chrome / Edge / Opera, desktop).</li>
+        <li><b>USB, not WiFi.</b> This app talks to the receiver over the USB serial port. It never uses WiFi/HTTP, so mixed-content blocking does not apply.</li>
+        <li><b>Offline &amp; installable.</b> A service worker caches the app shell, so it loads without a network. Use your browser's <em>Install app</em> option to add it to your desktop.</li>
+        <li><b>Setup.</b> On the receiver enable <code>Settings &rarr; USB Port &rarr; Ad hoc</code>, plug in USB, then click <b>Connect</b> (115200 8N1).</li>
+        <li><b>Telemetry</b> (frequency, band, mode, volume, RSSI, SNR, battery) is read from the device status stream. RDS and per-point spectrum data are not exposed over this serial protocol, so they are not shown.</li>
+      </ul>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
