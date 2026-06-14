@@ -172,7 +172,7 @@ jobs:
       - name: Upload release artifacts
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          FILENAMES: ${{ github.event.repository.name }}-${{ needs.build.outputs.slug }}-*.zip
+          FILENAMES: ats-mini-${{ needs.build.outputs.slug }}-*.zip
           BINFILES: artifact/ats-mini-${{ needs.build.outputs.slug }}-*.bin
           SLUG: ${{ needs.build.outputs.slug }}
         run: |
