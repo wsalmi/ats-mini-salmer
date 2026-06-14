@@ -23,13 +23,17 @@ const sendQ = [];
 
 function enc(s) { return new TextEncoder().encode(s); }
 
+// A serial sweep blocks the device for ~1-3 s while it runs, so allow generous
+// time for a '?SCAN' response before giving up.
+const RPC_TIMEOUT = 6000;
+
 function pump() {
   if (inFlight || !sendQ.length || !writer) return;
   const e = sendQ.shift();
   writer.write(enc(e.cmd)).catch((err) => log("! write: " + err.message));
   if (!e.expect) { if (e.res) e.res(); pump(); return; }
   inFlight = e;
-  e.timer = setTimeout(() => { inFlight = null; e.rej(new Error("timeout")); pump(); }, 2500);
+  e.timer = setTimeout(() => { inFlight = null; e.rej(new Error("timeout")); pump(); }, RPC_TIMEOUT);
 }
 
 // Fire-and-forget raw bytes (single-char cmds, F<hz>, console input).
@@ -37,20 +41,31 @@ function sendRaw(s) {
   return new Promise((res) => { sendQ.push({ cmd: s, expect: null, res }); pump(); });
 }
 
-// Query/response: resolves with the matching '=PREFIX ...' line text.
-function rpc(cmd) {
-  return new Promise((res, rej) => { sendQ.push({ cmd: cmd + "\r", expect: true, res, rej }); pump(); });
+// Query/response: resolves with the matching '=<tag> ...' line text. `tag` is
+// the expected response prefix without the leading '=' ("STATUS", "SCAN",
+// "MEM", "LISTS", or "OK" for acks). Only a matching '=' line (or "=ERR")
+// resolves the request; any other line is treated as telemetry/noise.
+function rpc(cmd, tag) {
+  return new Promise((res, rej) => { sendQ.push({ cmd: cmd + "\r", expect: true, tag: tag, res, rej }); pump(); });
+}
+
+function lineMatches(line, tag) {
+  if (line.indexOf("=ERR") === 0) return true;        // surface errors to caller
+  if (!tag) return line[0] === "=";
+  return line.indexOf("=" + tag) === 0;
 }
 
 function onLine(line) {
   if (line.length === 0) return;
-  if (line[0] === "=") {
-    if (inFlight) { clearTimeout(inFlight.timer); const e = inFlight; inFlight = null; e.res(line); pump(); }
-    else log("< " + line);
-  } else {
-    // Echo / CSV status / F-command echo / Error lines — surfaced in the console.
-    log("< " + line);
+  // Command responses are '=' prefixed and matched to the in-flight request by
+  // tag. Everything else (echoes, the legacy CSV telemetry stream, screen-dump
+  // hex, error noise) is routed only to the console and never resolves an RPC,
+  // so an asynchronous stream can never corrupt '?SCAN'/'?STATUS' parsing.
+  if (line[0] === "=" && inFlight && lineMatches(line, inFlight.tag)) {
+    clearTimeout(inFlight.timer); const e = inFlight; inFlight = null; e.res(line); pump();
+    return;
   }
+  log("< " + line);
 }
 
 function parseTagged(line, tag) {
@@ -88,7 +103,7 @@ async function connect() {
     setConnUI(true);
     readLoop();
     log("# connected");
-    await rpc("?LOG 0").catch(() => {});      // stop the CSV status stream
+    await rpc("?LOG 0", "OK").catch(() => {});      // stop the CSV status stream
     await loadLists();                         // theme / UTC dropdowns (one-shot)
     poll(); mload();
     pollT = setInterval(poll, 1000);
@@ -136,7 +151,7 @@ async function readLoop() {
 // ---- command helpers ------------------------------------------------------
 var lastUnit = "MHz", gFreqHz = 0, gFm = true;
 function cmd(c) { if (connected) sendRaw(c); }
-function setVal(k, v) { if (connected) rpc("?SET " + k + " " + v).catch(() => {}); }
+function setVal(k, v) { if (connected) rpc("?SET " + k + " " + v, "OK").catch(() => {}); }
 function setStep(khz) { setVal("step", khz); }
 function tuneHz(hz) { if (connected) sendRaw("F" + Math.round(hz) + "\r"); }
 function fmtFreq(s) { var p = ("" + s).split("."); p[0] = p[0].replace(/\B(?=(\d{3})+(?!\d))/g, "\u2009"); return p.join("."); }
@@ -202,7 +217,7 @@ function bdg(id, on, warn) { var e = $(id); if (e) e.className = "badge" + (on ?
 // ---- status poll ----------------------------------------------------------
 async function poll() {
   if (!connected) return;
-  let line; try { line = await rpc("?STATUS"); } catch (e) { return; }
+  let line; try { line = await rpc("?STATUS", "STATUS"); } catch (e) { return; }
   const d = parseTagged(line, "STATUS"); if (!d) return;
   lastUnit = d.unit; gFm = (d.unit == "MHz"); gFreqHz = d.freqHz;
   var fe = $("freq"); if (fe) fe.innerHTML = fmtFreq(d.freq) + "<span class='u'>" + d.unit + "</span>";
@@ -244,7 +259,7 @@ function cfgApply(d) {
   var bv = $("brtv"); if (bv) bv.textContent = d.brt; var sv = $("sleepv"); if (sv) sv.textContent = d.sleep ? d.sleep + "s" : "Off";
 }
 async function loadLists() {
-  let line; try { line = await rpc("?LISTS"); } catch (e) { return; }
+  let line; try { line = await rpc("?LISTS", "LISTS"); } catch (e) { return; }
   const d = parseTagged(line, "LISTS"); if (!d) return;
   var th = $("theme"); if (th && d.themes) { th.innerHTML = ""; d.themes.forEach(function (n, i) { var o = document.createElement("option"); o.value = i; o.textContent = n; th.appendChild(o); }); }
   var ut = $("utc"); if (ut && d.utc) { ut.innerHTML = ""; d.utc.forEach(function (n, i) { var o = document.createElement("option"); o.value = i; o.textContent = n; ut.appendChild(o); }); }
@@ -256,7 +271,7 @@ async function loadLists() {
 function mfmt(hz, m) { return m == "FM" ? (hz / 1e6).toFixed(2) + " MHz" : (hz / 1000).toFixed(0) + " kHz"; }
 async function mload() {
   if (!connected) return;
-  let line; try { line = await rpc("?MEM"); } catch (e) { return; }
+  let line; try { line = await rpc("?MEM", "MEM"); } catch (e) { return; }
   const d = parseTagged(line, "MEM"); if (!d) return;
   var t = $("mlist"); if (!t) return; t.innerHTML = "";
   txt("mcount", "(" + d.used.length + "/" + d.total + ")");
@@ -270,13 +285,13 @@ async function mload() {
   });
 }
 function mrefresh() { setTimeout(mload, 500); }
-function act(a, s) { if (connected) rpc("?MEM " + a + " " + s).then(mrefresh).catch(() => {}); }
-function saveCur() { var s = $("saveslot").value; if (connected) rpc("?MEM save " + s).then(mrefresh).catch(() => {}); }
+function act(a, s) { if (connected) rpc("?MEM " + a + " " + s, "OK").then(mrefresh).catch(() => {}); }
+function saveCur() { var s = $("saveslot").value; if (connected) rpc("?MEM save " + s, "OK").then(mrefresh).catch(() => {}); }
 function setSlot() {
   var s = $("eslot").value, b = $("eband").value, m = $("emode").value, v = parseFloat($("efreq").value);
   if (isNaN(v)) { alert("Enter a frequency"); return; }
   var hz = $("eunit").value == "M" ? Math.round(v * 1e6) : Math.round(v * 1000);
-  if (connected) rpc("?MEM set " + s + " " + b + " " + hz + " " + m).then(mrefresh).catch(() => {});
+  if (connected) rpc("?MEM set " + s + " " + b + " " + hz + " " + m, "OK").then(mrefresh).catch(() => {});
 }
 
 // ---- tabs -----------------------------------------------------------------
@@ -314,19 +329,19 @@ function setRun(on) {
   specRun = on; setRunBtn(); lockRadio(on);
   if (!connected) { specRun = false; setRunBtn(); lockRadio(false); return; }
   if (on) { if (!scanning) scanOnce(); }
-  else { if (scanPollT) { clearTimeout(scanPollT); scanPollT = null; } rpc("?SCANSTOP").catch(() => {}); }
+  else { if (scanPollT) { clearTimeout(scanPollT); scanPollT = null; } rpc("?SCANSTOP", "OK").catch(() => {}); }
 }
 function single() { if (specRun) setRun(false); if (!scanning) scanOnce(); }
 
 async function scanOnce() {
   if (scanning || !connected) return;
   scanning = true; txt("specstat", specRun ? "running" : "sweep");
-  try { await rpc("?SCANRUN " + curLoHz + " " + curHiHz + " " + (specRun ? 1 : 0)); } catch (e) {}
+  try { await rpc("?SCANRUN " + curLoHz + " " + curHiHz + " " + (specRun ? 1 : 0), "OK"); } catch (e) {}
   pollScan(0);
 }
 async function pollScan(tries) {
   scanPollT = null;
-  let line; try { line = await rpc("?SCAN"); } catch (e) {
+  let line; try { line = await rpc("?SCAN", "SCAN"); } catch (e) {
     if (tries < 120 && connected) scanPollT = setTimeout(function () { pollScan(tries + 1); }, 120); else scanDone(); return;
   }
   const d = parseTagged(line, "SCAN");

@@ -122,6 +122,13 @@ static volatile int      webWaterfallHi = 0;
 
 bool webWaterfallActive() { return webWaterfallOn; }
 
+// TRUE while a web/serial-bridge-initiated scan is actively running (blocking)
+// in the main loop. Used to stop serialConsumeAbortPending() from eating the
+// serial bytes of a client's '?SCAN' poll mid-scan, which would both abort the
+// scan and desync the '?'-command framing.
+static volatile bool webScanInProgress = false;
+bool webScanBridgeActive() { return webScanInProgress; }
+
 static inline int clampInt(int v, int lo, int hi)
 {
   return v<lo? lo : v>hi? hi : v;
@@ -339,6 +346,7 @@ int webRemoteLoop()
   if(webPendingScan)
   {
     webPendingScan = false;
+    webScanInProgress = true;
     const Band *b = getCurrentBand();
     int lo = webWaterfallLo, hi = webWaterfallHi;
     // Clamp the requested [lo,hi] window to the current band edges.
@@ -360,6 +368,7 @@ int webRemoteLoop()
     {
       scanRun(currentFrequency, (uint16_t)webWaterfallStep, WATERFALL_POINTS, WATERFALL_TUNE_DELAY, webWaterfallOn);
     }
+    webScanInProgress = false;
     event |= REMOTE_CHANGED;
   }
 

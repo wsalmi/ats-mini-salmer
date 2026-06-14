@@ -2,7 +2,7 @@
 // Device communication uses Web Serial (USB) and is unaffected by this cache;
 // the service worker only makes the app shell load without a network.
 
-const CACHE = "ats-mini-pwa-v2";
+const CACHE = "ats-mini-pwa-v3";
 const SHELL = [
   "./",
   "./index.html",

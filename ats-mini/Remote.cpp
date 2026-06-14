@@ -643,6 +643,13 @@ int serialLoop(uint8_t usbMode)
 bool serialConsumeAbortPending(uint8_t usbMode)
 {
   if(usbMode == USB_OFF || !Serial.available()) return false;
+  // While a web/serial-bridge scan is running, the connected client keeps
+  // sending '?SCAN' poll commands. Those bytes must NOT be consumed here:
+  // doing so would abort the scan and, worse, desync the '?'-line framing so
+  // the leftover bytes (e.g. the "SCAN" in "?SCAN") would execute as legacy
+  // single-char commands (notably 'C' = screen capture, which floods the
+  // port). Leave the bytes in the buffer for serialLoop() to parse properly.
+  if(webScanBridgeActive()) return false;
   Serial.read();
   return true;
 }

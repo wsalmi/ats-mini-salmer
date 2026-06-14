@@ -253,6 +253,7 @@ void netRequestConnect();
 void netTickTime();
 int webRemoteLoop();
 bool webWaterfallActive();
+bool webScanBridgeActive();
 
 // Serial-remote bridge into the web subsystem (full Web UI parity over serial).
 // These reuse the exact same JSON builders, pending-settings apply paths and
