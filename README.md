@@ -29,92 +29,178 @@ The hardware, software and flashing documentation is available at <https://esp32
 
 # Fork Features / Novidades deste Fork
 
-This fork adds a full web remote-control interface, an RSSI waterfall, a Morse
-(CW) decoder and a frequency-limit override, plus documented serial and HTTP
-APIs. The sections below are bilingual: English first, **Português** second.
+This fork turns the radio into a remote-controllable SDR-style receiver. It adds
+a **tabbed web app** (Spectrum / Control / Memory / Config) served by the device,
+an **SDR spectrum + waterfall** with click-to-tune, an **RDS** display, an
+**offline, installable Web Serial PWA** that drives the radio over USB with the
+same interface, an on-device **RSSI waterfall**, an always-available **Morse (CW)
+decoder**, a **frequency-limit override**, and documented serial and HTTP APIs
+(including an extended line-based serial protocol). The sections below are
+bilingual: English first, **Português** second.
 
-*Este fork adiciona uma interface web completa de controle remoto, uma cascata
-(waterfall) de RSSI, um decodificador de Morse (CW) e a liberação dos limites de
-frequência, além de APIs serial e HTTP documentadas. As seções abaixo são
+*Este fork transforma o rádio em um receptor estilo SDR controlável remotamente.
+Ele adiciona um **app web em abas** (Spectrum / Control / Memory / Config)
+servido pelo dispositivo, um **espectro + cascata (waterfall) SDR** com
+clique-para-sintonizar, exibição de **RDS**, um **PWA Web Serial offline e
+instalável** que controla o rádio via USB com a mesma interface, uma **cascata de
+RSSI** no próprio aparelho, um **decodificador de Morse (CW)** sempre disponível,
+a **liberação dos limites de frequência** e APIs serial e HTTP documentadas
+(incluindo um protocolo serial estendido baseado em linhas). As seções abaixo são
 bilíngues: inglês primeiro, **Português** em seguida.*
 
 ## Web Control UI / Interface Web de Controle
 
 A modern, responsive, dark "receiver console" served directly by the device.
 Connect to the radio's Wi-Fi (AP mode) or join it to your network, then open
-**http://atsmini.local/** (mDNS) or the device IP. The Status page is a single
-page app that polls `/api/status` once per second and renders everything live:
+**http://atsmini.local/** (mDNS) or the device IP. It is a single-page app with
+client-side **tabs — Spectrum, Control, Memory and Config** — plus a
+**Desktop App (USB)** link in the header that opens the offline PWA (see below).
+The legacy `/memory` and `/config` routes still work and deep-link to the
+matching tab.
 
-* High-contrast LED-style **frequency readout** with a separated unit and
-  mode-aware formatting (MHz for FM, thousands-separated kHz for AM/SSB).
-* Animated **S-meter / SNR / battery** bars and status **badges**
+### Spectrum tab / Aba Spectrum
+
+An SDR-style band scope that auto-runs on load.
+
+* **Line spectrum** with current-level (blue, filled), peak-hold (orange),
+  per-point **SNR** (green) and an optional running **average** trace, all on a
+  shared frequency axis with gridlines, a ruler and adaptive units (kHz/MHz).
+* A **Viridis / Inferno / Grayscale** **waterfall** heatmap aligned to the same
+  axis, scrolling under the spectrum.
+* **Init / End** frequency window inputs with **per-field kHz/MHz** unit
+  selectors, validation feedback and a band-range hint; `Set range` applies it.
+* A dashed **Tuned** marker, a hover **crosshair** showing the frequency under
+  the cursor, and **click-to-tune** that snaps to the nearest detected signal
+  peak (adaptive noise-floor peak detection).
+* **Run / Single** sweep control and resolution presets (Narrow / Medium / Wide).
+* A **device lock**: while a continuous sweep runs, the radio is paused and held
+  muted (the device screen shows *"Waterfall (Web UI) — radio paused"*), and the
+  other tabs reflect that the radio is busy.
+
+![Web UI – Spectrum tab (line spectrum + waterfall, click-to-tune)](docs/source/_static/web-spectrum.png)
+
+### Control tab / Aba Control
+
+The classic receiver console.
+
+* High-contrast LED-style **frequency readout**, with the live **RDS** station
+  name and radiotext shown underneath it.
+* Animated **S-meter / SNR / battery** meters and status **badges**
   (Wi-Fi, BLE, RDS, CW, Override, Mute).
-* Grouped control panels: **Tuning, Band & Mode, Step & Bandwidth,
-  Volume & AGC** with segmented buttons.
-* A live **Set Frequency** field that mirrors the current frequency in the
-  active unit with a thousands-separator mask (spaces/commas are stripped on
-  submit so tuning still works).
-* Dynamic **Step quick-select buttons** that reflect the actual steps supported
-  by the current band/mode (sourced from the `steps` field of `/api/status`),
-  plus a live step readout.
-* A live, editable **Memory** page (tune, save current, clear, or manually write
-  any slot) and a **Config** page mirroring every on-device setting (brightness,
-  theme, UI layout, sleep, RDS mode, FM region, time zone, USB/Bluetooth/Wi-Fi)
-  with immediate, persisted changes.
+* Grouped panels: **Tuning** (dynamic step quick-select reflecting the steps the
+  current band/mode actually supports), **Band & Mode** (mode selector plus a
+  band selector listing every band with its frequency range), **Step &
+  Bandwidth**, **Volume & AGC** (with an AGC On/Off toggle and a Mute toggle).
+* A live, masked **Set Frequency** field that mirrors the current frequency in
+  the active unit (spaces/commas are stripped on submit so tuning still works).
+* A **Frequency Limit Override** toggle and the **Morse (CW)** decoded text and
+  source selector.
+
+![Web UI – Control tab (frequency, RDS, meters, controls)](docs/source/_static/web-control.png)
+
+### Memory tab / Aba Memory
+
+A live, editable **station memory** list: tune any slot, save the current
+frequency, clear a slot, or manually write a slot (band / frequency / mode).
+
+![Web UI – Memory tab (editable station memory)](docs/source/_static/web-memory.png)
+
+### Config tab / Aba Config
+
+Every on-device setting as a live, immediately-persisted control: Wi-Fi networks
+and web-UI login, brightness, theme, UI layout, scrolling, sleep, RDS mode, FM
+region, time zone, and USB / Bluetooth / Wi-Fi connectivity.
+
+![Web UI – Config tab (all device settings)](docs/source/_static/web-config.png)
 
 Radio commands from the browser are queued and executed in the main loop to
-avoid racing with the receiver (I2C) hardware.
-
-![Web Control UI - Status page](docs/source/_static/web-control.png)
-
-![Web Memory page](docs/source/_static/web-memory.png)
-
-![Web Config page](docs/source/_static/web-config.png)
-
-The layout is fully responsive and works well on a phone:
+avoid racing with the receiver (I2C) hardware. The layout is fully responsive and
+works well on a phone:
 
 ![Web Control UI on mobile](docs/source/_static/web-control-mobile.png)
 
 *Um "console de receptor" escuro, moderno e responsivo, servido diretamente pelo
 rádio. Conecte-se ao Wi-Fi do rádio (modo AP) ou coloque-o na sua rede e abra
-**http://atsmini.local/** (mDNS) ou o IP do dispositivo. A página Status é um
-aplicativo de página única que consulta `/api/status` uma vez por segundo e
-mostra tudo ao vivo: leitura de **frequência** estilo LED com unidade separada e
-formatação por modo (MHz para FM, kHz com separador de milhar para AM/SSB);
-barras animadas de **S-meter / SNR / bateria** e **selos** de estado
-(Wi-Fi, BLE, RDS, CW, Override, Mudo); painéis agrupados de **Sintonia, Banda e
-Modo, Passo e Largura de banda, Volume e AGC**; um campo **Definir Frequência**
-que acompanha a frequência atual na unidade ativa com máscara de milhar; botões
-dinâmicos de **passo rápido** que refletem os passos reais suportados pela
-banda/modo atual; uma página de **Memória** editável ao vivo e uma página de
-**Configuração** que espelha todas as configurações do dispositivo, aplicadas e
-salvas imediatamente. Os comandos enviados pelo navegador são enfileirados e
-executados no laço principal para não conflitar com o hardware do receptor.*
+**http://atsmini.local/** (mDNS) ou o IP do dispositivo. É um aplicativo de
+página única com **abas — Spectrum, Control, Memory e Config** — e um link
+**Desktop App (USB)** no cabeçalho que abre o PWA offline (veja abaixo). As rotas
+antigas `/memory` e `/config` continuam funcionando e abrem a aba correspondente.
+A aba **Spectrum** é um analisador estilo SDR que roda sozinho ao carregar:
+espectro em linha (nível atual, retenção de pico, SNR e média opcional), cascata
+**Viridis / Inferno / Grayscale** alinhada ao mesmo eixo de frequência, campos
+**Init / End** com seletor de unidade kHz/MHz por campo e validação, marcador
+**Tuned** tracejado, mira ao passar o mouse e **clique-para-sintonizar** que
+encaixa no pico detectado mais próximo; controle **Run / Single**; e um
+**bloqueio do dispositivo** — durante a varredura contínua o rádio fica pausado e
+mudo (a tela mostra "Waterfall (Web UI) — radio paused"). A aba **Control** traz
+a leitura de frequência com **RDS** (nome da estação e radiotexto) abaixo,
+medidores de **S-meter / SNR / bateria** e selos de estado, painéis de
+**Sintonia, Banda e Modo, Passo e Largura de banda, Volume e AGC** (com botões de
+AGC On/Off e Mudo), seletor de banda listando todas as bandas com suas faixas, um
+campo **Definir Frequência** mascarado, o botão de liberação de limites e o texto
+decodificado de **Morse (CW)**. A aba **Memory** é uma lista de **memórias**
+editável ao vivo (sintonizar, salvar, limpar, escrever manualmente) e a aba
+**Config** espelha todas as configurações do dispositivo, aplicadas e salvas na
+hora. Os comandos do navegador são enfileirados e executados no laço principal
+para não conflitar com o hardware do receptor.*
+
+## Offline Web Serial PWA / PWA Web Serial Offline
+
+An offline-capable, installable **Progressive Web App** (in `pwa/`) that controls
+the radio over **USB** using the **Web Serial API**, with **full feature parity**
+to the device web UI (the same Spectrum / Control / Memory / Config tabs). It
+needs no Wi-Fi: it talks to the firmware through an extended line-based serial
+protocol. Because Web Serial is Chromium-only, use **Google Chrome, Edge or
+another Chromium browser** (it will not connect in Firefox/Safari).
+
+It is hosted via **GitHub Pages** at
+<https://wsalmi.github.io/ats-mini-salmer/pwa/> (open it once online to install;
+it then runs offline). You can also open it from the **Desktop App (USB)** link
+in the device web header. Click **Connect** and pick the ATS-Mini serial port
+(USB only, 115200 8N1).
+
+> To publish your own fork's PWA, enable Pages under **Settings → Pages → Build
+> and deployment → Source: GitHub Actions**.
+
+![Offline Web Serial PWA – disconnected shell (Chromium only)](docs/source/_static/pwa.png)
+
+*Um **Progressive Web App** instalável e offline (em `pwa/`) que controla o rádio
+via **USB** usando a **Web Serial API**, com **paridade total** com a interface
+web do dispositivo (as mesmas abas Spectrum / Control / Memory / Config). Não
+precisa de Wi-Fi: conversa com o firmware por um protocolo serial estendido
+baseado em linhas. Como a Web Serial é exclusiva de navegadores Chromium, use
+**Google Chrome, Edge ou outro navegador Chromium** (não conecta no
+Firefox/Safari). É hospedado via **GitHub Pages** em
+<https://wsalmi.github.io/ats-mini-salmer/pwa/> (abra online uma vez para
+instalar; depois funciona offline) ou pelo link **Desktop App (USB)** no
+cabeçalho. Clique em **Connect** e escolha a porta serial do ATS-Mini (USB,
+115200 8N1). Para publicar o PWA do seu próprio fork, ative o Pages em
+**Settings → Pages → Source: GitHub Actions**.*
 
 ## RSSI Waterfall / Cascata de RSSI
 
-A continuous scrolling heatmap of band activity, available both on the device
-and in the web UI.
+A continuous scrolling heatmap of band activity.
 
 * **On-device:** open **Menu > Waterfall**. Rotating the encoder moves the scan
   center frequency; a button press exits and restores the previous frequency
   and mute state.
-* **Web:** the canvas waterfall below the meters is driven by the
-  **Waterfall: Off/On** toggle on the Status card. It polls `/api/scan` until a
-  scan completes (the `busy` field) before drawing the next row.
-* **Mutual exclusion:** while the waterfall is active (on the device, or as the
-  web toggle) it owns the radio, so normal tuning/listening is paused. The web
-  UI greys out the radio controls and shows a *"Waterfall ativo — rádio
-  pausado"* banner.
+* **Web:** the waterfall now lives in the **Spectrum tab**, aligned to the line
+  spectrum on a shared frequency axis (see above). It polls `/api/scan` until
+  each scan completes (the `busy` field) before drawing the next row.
+* **Mutual exclusion:** while a continuous sweep is active (on the device, or via
+  the web Spectrum tab) it owns the radio, so normal tuning/listening is paused.
+  The device shows *"Waterfall (Web UI) — radio paused"* and the web UI reflects
+  the locked state.
 
-*Um mapa de calor rolante e contínuo da atividade da banda, disponível tanto no
-dispositivo quanto na web. **No dispositivo:** abra **Menu > Waterfall**; girar o
-encoder move a frequência central da varredura e um clique sai, restaurando a
-frequência e o estado de mudo anteriores. **Na web:** a cascata abaixo dos
-medidores é controlada pelo botão **Waterfall: Off/On** e consulta `/api/scan`
-até a varredura terminar. **Exclusão mútua:** enquanto a cascata está ativa, ela
-assume o rádio, então a sintonia/escuta normal fica pausada; a UI web esmaece os
-controles e mostra o aviso "Waterfall ativo — rádio pausado".*
+*Um mapa de calor rolante e contínuo da atividade da banda. **No dispositivo:**
+abra **Menu > Waterfall**; girar o encoder move a frequência central da varredura
+e um clique sai, restaurando a frequência e o estado de mudo anteriores. **Na
+web:** a cascata agora fica na **aba Spectrum**, alinhada ao espectro em linha no
+mesmo eixo de frequência (veja acima), consultando `/api/scan` até cada varredura
+terminar. **Exclusão mútua:** enquanto a varredura contínua está ativa (no
+aparelho ou pela aba Spectrum) ela assume o rádio, então a sintonia/escuta normal
+fica pausada; o dispositivo mostra "Waterfall (Web UI) — radio paused" e a UI web
+reflete o estado bloqueado.*
 
 ## Morse (CW) Decoder / Decodificador de Morse (CW)
 
@@ -183,6 +269,29 @@ up/clockwise. Verified commands (see `ats-mini/Remote.cpp`):
 | `t` | Toggle periodic status logging |
 | `I` / `i` | Calibration up / down |
 | `T` / `^` / `@` | Theme editor: toggle / set / get colors |
+
+On top of the single-character keys, the firmware also speaks an **extended,
+line-based query protocol** (used by the Web Serial PWA) that mirrors the HTTP
+API over USB, so a serial client reaches full parity without Wi-Fi. Commands are
+terminated with `\r` and answered with `=`-prefixed lines (JSON reuses the same
+builders as the web endpoints):
+
+| Command | Response | Purpose |
+| --- | --- | --- |
+| `?STATUS` | `=STATUS {json}` | Full status (same JSON as `/api/status`) |
+| `?MEM` | `=MEM {json}` | Memory slots (same JSON as `/api/memory`) |
+| `?SCAN` | `=SCAN {json}` | Latest scan data (same JSON as `/api/scan`) |
+| `?SCANRUN lo hi cont` | `=OK SCANRUN` | Run a scan over `[lo,hi]` Hz (`0 0` = centered); `cont=1` keeps sweeping and takes the device lock |
+| `?SCANSTOP` | `=OK SCANSTOP` | Stop a continuous scan / release the lock |
+| `?SET key val` | `=OK SET` | Change a setting (same keys as `/api/set`) |
+| `?MEM action slot [band hz mode]` | `=OK MEM` | `tune` / `save` / `clear` / `set` a memory slot |
+
+*Além das teclas de um caractere, o firmware também fala um **protocolo estendido
+baseado em linhas** (usado pelo PWA Web Serial) que espelha a API HTTP via USB,
+dando paridade total sem Wi-Fi. Os comandos terminam em `\r` e são respondidos
+com linhas iniciadas por `=` (o JSON reutiliza os mesmos geradores dos endpoints
+web): `?STATUS`, `?MEM`, `?SCAN`, `?SCANRUN lo hi cont`, `?SCANSTOP`,
+`?SET key val` e `?MEM action slot ...`.*
 
 ### Web API examples (curl) / Exemplos de API Web (curl)
 
