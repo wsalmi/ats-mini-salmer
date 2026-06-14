@@ -254,6 +254,18 @@ void netTickTime();
 int webRemoteLoop();
 bool webWaterfallActive();
 
+// Serial-remote bridge into the web subsystem (full Web UI parity over serial).
+// These reuse the exact same JSON builders, pending-settings apply paths and
+// waterfall device-lock used by the HTTP API.
+String netStatusJson();
+String netMemoryJson();
+String netScanJson();
+String netListsJson();
+void netApplySetting(const String &key, const String &val);
+void netMemoryAction(const String &action, int slot, const String &band, uint32_t hz, const String &mode);
+void netScanRequest(uint32_t loHz, uint32_t hiHz, bool cont);
+void netScanStop();
+
 // Remote.c
 #define REMOTE_CHANGED   1
 #define REMOTE_CLICK     2

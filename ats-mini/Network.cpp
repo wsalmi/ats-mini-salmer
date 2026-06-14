@@ -1351,6 +1351,117 @@ static void webMemoryCommand(AsyncWebServerRequest *request)
   request->send(200, "text/plain", "OK");
 }
 
+// ===========================================================================
+// Serial-remote bridge (full Web UI parity over USB/BLE serial).
+//
+// These functions are called from the ad hoc '?' line-protocol in Remote.cpp.
+// They deliberately reuse the same JSON builders, the same webPending* apply
+// path (drained by webRemoteLoop() in the main loop) and the same waterfall
+// device-lock (webWaterfallActive()) as the HTTP API, so a serial client gets
+// identical behavior to the device web page without WiFi.
+// ===========================================================================
+
+String netStatusJson() { return webStatusJson(); }
+String netMemoryJson() { return webMemoryJson(); }
+String netScanJson()   { return webScanJson(); }
+
+// One-shot lists of firmware-defined names the status JSON only carries as
+// indices: color themes and UTC offsets. Lets the PWA Config tab build the
+// matching Theme / Time Zone dropdowns.
+String netListsJson()
+{
+  String json = "{\"themes\":[";
+  for(int i=0 ; i<getTotalThemes() ; i++)
+  {
+    if(i) json += ',';
+    json += "\"" + webJsonEscape(theme[i].name) + "\"";
+  }
+  json += "],\"utc\":[";
+  for(int i=0 ; i<getTotalUTCOffsets() ; i++)
+  {
+    if(i) json += ',';
+    json += "\"" + webJsonEscape(utcOffsets[i].desc) + "\"";
+  }
+  json += "]}";
+  return json;
+}
+
+// Mirror of the /api/set handler: queue a single setting change by key/value.
+void netApplySetting(const String &key, const String &val)
+{
+  int v = val.toInt();
+  if(key == "morse")        { if(v>=0 && v<getTotalMorseModes()) webPendingMorse = v; }
+  else if(key == "override")  webPendingOverride = v ? 1 : 0;
+  else if(key == "brt")       webPendingBrt = v;
+  else if(key == "rds")       webPendingRds = v;
+  else if(key == "region")    webPendingRegion = v;
+  else if(key == "theme")     webPendingTheme = v;
+  else if(key == "ui")        webPendingUI = v;
+  else if(key == "zoom")      webPendingZoom = v ? 1 : 0;
+  else if(key == "scroll")    webPendingScroll = v ? 1 : 0;
+  else if(key == "sleep")     webPendingSleep = v;
+  else if(key == "sleepmode") webPendingSleepMode = v;
+  else if(key == "utc")       webPendingUtc = v;
+  else if(key == "usb")       webPendingUsb = v;
+  else if(key == "ble")       webPendingBle = v;
+  else if(key == "wifi")      webPendingWifi = v;
+  else if(key == "step")      webPendingStep = v;
+  else if(key == "agc")       webPendingAgc = v ? 1 : 0;
+  else if(key == "mute")      webPendingMute = v ? 1 : 0;
+  else if(key == "mode")      webPendingMode = v;
+  else if(key == "band")      webPendingBand = v;
+  else if(key == "freq")      webEnqueueCommand("F" + val + "\r");
+}
+
+// Mirror of webMemoryCommand: tune/save/clear/set a memory slot.
+void netMemoryAction(const String &action, int slot, const String &band, uint32_t hz, const String &mode)
+{
+  if(slot<1 || slot>getTotalMemories()) return;
+
+  if(action == "tune")
+  {
+    webPendingMemTune = slot;
+  }
+  else if(action == "clear")
+  {
+    webEnqueueCommand("#" + String(slot) + "," + getCurrentBand()->bandName +
+                      ",0," + bandModeDesc[currentMode] + "\r");
+  }
+  else if(action == "save")
+  {
+    uint32_t f = freqToHz(currentFrequency, currentMode) + currentBFO;
+    webEnqueueCommand("#" + String(slot) + "," + getCurrentBand()->bandName +
+                      "," + String(f) + "," + bandModeDesc[currentMode] + "\r");
+  }
+  else if(action == "set")
+  {
+    if(band.length() && mode.length())
+      webEnqueueCommand("#" + String(slot) + "," + band + "," + String(hz) + "," + mode + "\r");
+  }
+}
+
+// Request a scan over an explicit [loHz,hiHz] window (0,0 = centered default).
+// cont=true keeps the device locked for continuous sweeps (auto mode); the lock
+// auto-clears via WEB_WATERFALL_TIMEOUT if the client stops requesting scans.
+void netScanRequest(uint32_t loHz, uint32_t hiHz, bool cont)
+{
+  bool fm = currentMode==FM;
+  uint32_t uhz = fm ? 10000 : 1000;
+  if(loHz && hiHz)
+  {
+    webWaterfallLo = (int)(loHz / uhz);
+    webWaterfallHi = (int)(hiHz / uhz);
+  }
+  webWaterfallOn = cont;
+  webPendingScan = true;
+  webWaterfallLastReq = millis();
+}
+
+void netScanStop()
+{
+  webWaterfallOn = false;
+}
+
 //
 // Config tab body (WiFi form + live device settings). Returns the inner HTML
 // for the Config pane; reads stored WiFi credentials from preferences.

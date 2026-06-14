@@ -339,6 +339,148 @@ void remoteTickTime(Stream* stream, RemoteState* state)
   }
 }
 
+// ===========================================================================
+// Extended line-based query/response protocol ('?' commands).
+//
+// Introduced for the offline Web Serial PWA so a USB/BLE client reaches full
+// parity with the device web UI without WiFi. It is fully backward compatible:
+// the legacy single-char commands and the 't' CSV status stream are untouched.
+//
+// Each command starts with '?', a verb, optional space-separated args, and ends
+// with CR ('\r'). Responses are single lines, CR/LF terminated, prefixed so the
+// client can parse them out of the stream:
+//
+//   ?STATUS\r            -> =STATUS {json}    full status (same JSON as /api/status)
+//   ?MEM\r               -> =MEM {json}       memory slots (same JSON as /api/memory)
+//   ?SCAN\r              -> =SCAN {json}      latest scan data (same JSON as /api/scan)
+//   ?LISTS\r             -> =LISTS {json}     theme + UTC-offset name lists (one-shot)
+//   ?SCANRUN lo hi cont\r-> =OK SCANRUN       run a scan over [lo,hi] Hz (0 0 = centered);
+//                                             cont=1 keeps the device locked for sweeps
+//   ?SCANSTOP\r          -> =OK SCANSTOP      stop continuous scan / release the lock
+//   ?SET key val\r       -> =OK SET           change a setting (same keys as /api/set,
+//                                             e.g. brt theme ui zoom scroll sleep
+//                                             sleepmode rds region utc usb ble wifi
+//                                             step agc mute mode band override morse freq)
+//   ?MEM action slot [band hz mode]\r -> =OK MEM   tune|save|clear|set a slot
+//   ?LOG 0|1\r           -> =OK LOG           turn the 't' CSV status stream off/on
+//
+// Unknown verbs return "=ERR <verb>". Note: when driven over the web command
+// queue (WebStream) responses are discarded; the HTTP API is used there instead.
+// ===========================================================================
+
+// Read a line (until CR) without echoing, with a timeout to avoid hanging if a
+// client sends a bare '?' without terminator. Returns the trimmed line length.
+static int remoteReadLine(Stream* stream, char *buf, int bufLen)
+{
+  int len = 0;
+  uint32_t deadline = millis() + 1000;
+  while(millis() < deadline)
+  {
+    int c = stream->read();
+    if(c < 0) { if(!stream->available()) { delay(1); } continue; }
+    if(c == 0xFF) continue;
+    if(c == '\r' || c == '\n') break;
+    if(len < bufLen-1) buf[len++] = (char)c;
+    deadline = millis() + 1000;
+  }
+  buf[len] = '\0';
+  return len;
+}
+
+// Split a buffer into space-separated tokens (in place). Returns token count.
+static int remoteTokenize(char *buf, char *tok[], int maxTok)
+{
+  int n = 0;
+  char *p = buf;
+  while(*p && n < maxTok)
+  {
+    while(*p == ' ') p++;
+    if(!*p) break;
+    tok[n++] = p;
+    while(*p && *p != ' ') p++;
+    if(*p) *p++ = '\0';
+  }
+  return n;
+}
+
+static void remoteLineCommand(Stream* stream, RemoteState* state)
+{
+  char line[128];
+  remoteReadLine(stream, line, sizeof(line));
+
+  char *tok[8];
+  int n = remoteTokenize(line, tok, 8);
+  if(n == 0) { stream->print("=ERR empty\r\n"); return; }
+
+  const char *verb = tok[0];
+
+  if(!strcmp(verb, "STATUS"))
+  {
+    stream->print("=STATUS ");
+    stream->print(netStatusJson());
+    stream->print("\r\n");
+  }
+  else if(!strcmp(verb, "SCAN"))
+  {
+    stream->print("=SCAN ");
+    stream->print(netScanJson());
+    stream->print("\r\n");
+  }
+  else if(!strcmp(verb, "LISTS"))
+  {
+    stream->print("=LISTS ");
+    stream->print(netListsJson());
+    stream->print("\r\n");
+  }
+  else if(!strcmp(verb, "SCANRUN"))
+  {
+    uint32_t lo = n>1 ? (uint32_t)strtoul(tok[1], nullptr, 10) : 0;
+    uint32_t hi = n>2 ? (uint32_t)strtoul(tok[2], nullptr, 10) : 0;
+    bool cont   = n>3 ? (atoi(tok[3]) != 0) : false;
+    netScanRequest(lo, hi, cont);
+    stream->print("=OK SCANRUN\r\n");
+  }
+  else if(!strcmp(verb, "SCANSTOP"))
+  {
+    netScanStop();
+    stream->print("=OK SCANSTOP\r\n");
+  }
+  else if(!strcmp(verb, "SET"))
+  {
+    if(n >= 3) netApplySetting(String(tok[1]), String(tok[2]));
+    stream->print("=OK SET\r\n");
+  }
+  else if(!strcmp(verb, "MEM"))
+  {
+    if(n == 1)
+    {
+      stream->print("=MEM ");
+      stream->print(netMemoryJson());
+      stream->print("\r\n");
+    }
+    else
+    {
+      // ?MEM action slot [band hz mode]
+      const char *action = tok[1];
+      int slot = n>2 ? atoi(tok[2]) : 0;
+      String band = n>3 ? String(tok[3]) : String("");
+      uint32_t hz = n>4 ? (uint32_t)strtoul(tok[4], nullptr, 10) : 0;
+      String mode = n>5 ? String(tok[5]) : String("");
+      netMemoryAction(String(action), slot, band, hz, mode);
+      stream->print("=OK MEM\r\n");
+    }
+  }
+  else if(!strcmp(verb, "LOG"))
+  {
+    state->remoteLogOn = (n>1) ? (atoi(tok[1]) != 0) : false;
+    stream->print("=OK LOG\r\n");
+  }
+  else
+  {
+    stream->printf("=ERR %s\r\n", verb);
+  }
+}
+
 //
 // Recognize and execute given remote command
 //
@@ -466,6 +608,12 @@ int remoteDoCommand(Stream* stream, RemoteState* state, char key)
     case '@':
       if(switchThemeEditor()) remoteGetColorTheme(stream);
       break;
+
+    case '?': // Extended line-based query/response protocol (see above)
+      remoteLineCommand(stream, state);
+      // Changes (if any) are applied asynchronously by webRemoteLoop(); no
+      // redraw is forced here, so return without REMOTE_CHANGED.
+      return event;
 
     default:
       // Command not recognized

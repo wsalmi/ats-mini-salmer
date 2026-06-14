@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#0a0e13">
-  <meta name="description" content="Offline Web Serial PWA to control the ATS-Mini receiver over USB.">
+  <meta name="description" content="Offline Web Serial PWA that mirrors the ATS-Mini web UI over USB.">
   <title>ATS-Mini Desktop (USB)</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
@@ -13,96 +13,243 @@
 </head>
 <body>
   <div class="bar">
-    <div class="brand">ATS<span>Mini</span> <em>USB</em></div>
+    <div class="brand">ATS<span>Mini</span><em>USB</em></div>
     <div class="nav">
-      <button id="connectBtn" class="primary">Connect</button>
-      <button id="disconnectBtn" hidden>Disconnect</button>
+      <a data-tab="spectrum" class="on" onclick="showTab('spectrum')">Spectrum</a>
+      <a data-tab="control" onclick="showTab('control')">Control</a>
+      <a data-tab="memory" onclick="showTab('memory')">Memory</a>
+      <a data-tab="config" onclick="showTab('config')">Config</a>
+      <a id="connlink" onclick="toggleConnect()"><span class="dot off" id="dot"></span><span id="connlbl">Connect</span></a>
     </div>
   </div>
 
-  <div class="wrap">
+  <!-- SPECTRUM ------------------------------------------------------------ -->
+  <div id="spectrum" class="pane on"><div class="wrap specwrap">
     <div id="unsupported" class="card warnbox" hidden>
-      <strong>Web Serial not supported.</strong>
-      This app needs the Web Serial API, available in Chromium-based browsers
-      (Chrome, Edge, Opera) on desktop. Firefox and Safari are not supported.
+      <strong>Web Serial not supported.</strong> This app needs the Web Serial API,
+      available in Chromium-based desktop browsers (Chrome, Edge, Opera). Firefox and Safari are not supported.
     </div>
-
-    <div id="status" class="card statusline">
-      <span class="dot off" id="dot"></span>
-      <span id="statusText">Not connected. Click <b>Connect</b> and pick the ATS-Mini serial port.</span>
+    <div id="needconn" class="card">Click <b>Connect</b> (top right) and select the ATS-Mini serial port. USB only, 115200 8N1.</div>
+    <div class="card">
+      <div class="sdrbar">
+        <button id="runbtn" class="acc sp" onclick="setRun(!specRun)">Run</button>
+        <button class="sp" onclick="single()">Single</button>
+        <span class="sp">&nbsp;</span>
+        <button class="sp" data-sp="2000" onclick="winPreset(2000)">Narrow</button>
+        <button class="sp" data-sp="6000" onclick="winPreset(6000)">Medium</button>
+        <button class="sp" data-sp="20000" onclick="winPreset(20000)">Wide</button>
+        <span class="sp">Init</span>
+        <input class="sp" type="number" step="any" id="loinp" oninput="markDirty('lo')" onkeydown="rngKey(event)">
+        <select class="sp" id="lou" onchange="convUnit('lo')"><option>kHz</option><option>MHz</option></select>
+        <span class="sp">End</span>
+        <input class="sp" type="number" step="any" id="hiinp" oninput="markDirty('hi')" onkeydown="rngKey(event)">
+        <select class="sp" id="hiu" onchange="convUnit('hi')"><option>kHz</option><option>MHz</option></select>
+        <button class="sp" onclick="applyRange()">Set range</button>
+        <span class="rngmsg sp" id="rngmsg"></span>
+        <span class="sp" id="bandhint"></span>
+        <label><input type="checkbox" id="tSnr" checked onchange="redraw()">SNR</label>
+        <label><input type="checkbox" id="tPeak" checked onchange="redraw()">Peak</label>
+        <label><input type="checkbox" id="tLabels" checked onchange="redraw()">Labels</label>
+        <label><input type="checkbox" id="tAvg" onchange="redraw()">Avg</label>
+        <label><input type="checkbox" id="tWf" checked onchange="toggleWf()">Waterfall</label>
+        <select class="sp" id="cmap" onchange="redraw()">
+          <option value="viridis">Viridis</option><option value="inferno">Inferno</option>
+          <option value="gray">Grayscale</option></select>
+        <a class="sp" style="cursor:pointer" onclick="resetPeak()">reset peak</a>
+        <span class="stat" id="specstat">idle</span>
+      </div>
+      <div class="readout" id="readout">Center -- &nbsp; Span -- &nbsp; Resolution -- &nbsp; -- pts</div>
+      <div class="specstack" id="specstack">
+        <canvas id="spec"></canvas>
+        <canvas id="wfs"></canvas>
+        <div id="xline"></div><div id="xhair"></div>
+      </div>
+      <div class="hint">Hover for the frequency at the cursor; click the spectrum or waterfall to tune
+        (detected channels snap to the nearest peak). Tuning works while running too.
+        Sweeps run over USB serial, so the refresh rate is lower than the device's on-screen view.</div>
     </div>
+  </div></div>
 
-    <!-- Frequency readout -->
+  <!-- CONTROL ------------------------------------------------------------- -->
+  <div id="control" class="pane"><div class="wrap">
+    <div id="wfban" class="wfbanner" style="display:none">Spectrum running &mdash; radio paused</div>
     <div class="card freqcard">
-      <div class="freq"><span id="freq">--</span><span class="u" id="frequnit">MHz</span></div>
-      <div class="meta">
-        <b id="band">--</b> &nbsp;|&nbsp; <b id="mode">--</b> &nbsp;|&nbsp;
-        Step <b id="step">--</b> &nbsp;|&nbsp; BW <b id="bw">--</b>
-      </div>
-      <div class="meta">
-        Vol <b id="vol">--</b> &nbsp;|&nbsp; AGC <b id="agc">--</b> &nbsp;|&nbsp;
-        RSSI <b id="rssi">--</b> dBuV &nbsp;|&nbsp; SNR <b id="snr">--</b> dB &nbsp;|&nbsp;
-        Batt <b id="volt">--</b> V
-      </div>
+      <div class="freq" id="freq">--<span class="u"></span></div>
+      <div class="meta" id="meta">--</div>
+      <div class="rdstop" id="topStation" style="display:none"></div>
+      <div class="rdsrt" id="topRt" style="display:none"></div>
     </div>
-
-    <!-- Tuning -->
     <div class="card">
-      <div class="ttl">Tuning</div>
-      <div class="seg big">
-        <button data-cmd="r">&laquo; Tune</button>
-        <button data-cmd="R">Tune &raquo;</button>
+      <div class="ttl">Signal</div>
+      <div class="badges">
+        <span class="badge" id="bdgWifi">Wi-Fi</span>
+        <span class="badge" id="bdgBle">BLE</span>
+        <span class="badge" id="bdgRds">RDS</span>
+        <span class="badge" id="bdgMorse">CW</span>
+        <span class="badge" id="bdgOvr">OVR</span>
+        <span class="badge" id="bdgMute">Mute</span>
       </div>
-      <div class="row">
-        <input type="number" id="freqInput" placeholder="Frequency in kHz (e.g. 7200)" inputmode="decimal">
-        <button id="setFreqBtn">Set</button>
-      </div>
-      <div class="hint">Sends <code>F&lt;Hz&gt;</code>. Must be within the current band unless override is on. In SSB the sub-kHz part sets the BFO.</div>
-      <div class="seg">
-        <button data-cmd="P" id="overrideBtn">Freq Override</button>
-        <button data-cmd="e">Encoder Click</button>
-        <button data-cmd="E">Short Press</button>
-      </div>
+      <div class="meter"><span class="ml">RSSI</span>
+        <div class="track"><div class="fill g" id="rssiFill"></div></div>
+        <span class="mv" id="rssiVal">--</span></div>
+      <div class="scale"><span>S1</span><span>S3</span><span>S5</span><span>S7</span>
+        <span>S9</span><span>+20</span><span>+40</span></div>
+      <div class="meter"><span class="ml">SNR</span>
+        <div class="track"><div class="fill g" id="snrFill"></div></div>
+        <span class="mv" id="snrVal">--</span></div>
+      <div class="meter"><span class="ml">Batt</span>
+        <div class="track"><div class="fill g" id="battFill"></div></div>
+        <span class="mv" id="battVal">--</span></div>
     </div>
-
-    <!-- Controls -->
-    <div class="card">
-      <div class="ttl">Controls</div>
-      <div class="grid">
-        <div class="ctl"><label>Band</label><div class="seg"><button data-cmd="b">&minus;</button><button data-cmd="B">+</button></div></div>
-        <div class="ctl"><label>Mode</label><div class="seg"><button data-cmd="m">&minus;</button><button data-cmd="M">+</button></div></div>
-        <div class="ctl"><label>Volume</label><div class="seg"><button data-cmd="v">&minus;</button><button id="muteBtn">Mute</button><button data-cmd="V">+</button></div></div>
-        <div class="ctl"><label>Step</label><div class="seg"><button data-cmd="s">&minus;</button><button data-cmd="S">+</button></div></div>
-        <div class="ctl"><label>Bandwidth</label><div class="seg"><button data-cmd="w">&minus;</button><button data-cmd="W">+</button></div></div>
-        <div class="ctl"><label>AGC / Att</label><div class="seg"><button data-cmd="a">&minus;</button><button data-cmd="A">+</button></div></div>
-        <div class="ctl"><label>Backlight</label><div class="seg"><button data-cmd="l">&minus;</button><button data-cmd="L">+</button></div></div>
-        <div class="ctl"><label>Sleep</label><div class="seg"><button data-cmd="O">On</button><button data-cmd="o">Off</button></div></div>
-      </div>
+    <div class="grid lockable">
+      <div class="card grp"><div class="ttl">Tuning</div>
+        <div class="seg" style="margin-bottom:.35em">
+          <div class="seg" id="stepbtns" style="flex:1"></div>
+          <span class="stepval"><span class="svl">Step</span><span class="svv" id="stepbox">--</span></span></div>
+        <div class="seg">
+          <button onclick="cmd('r')">&laquo; Tune</button>
+          <button onclick="cmd('R')">Tune &raquo;</button></div></div>
+      <div class="card grp"><div class="ttl">Band &amp; Mode</div>
+        <div class="seg" id="modebtns" style="margin-bottom:.35em"></div>
+        <div class="setrow" style="margin-bottom:.35em">
+          <select id="bandsel" onchange="setVal('band',this.value)"></select></div>
+        <div class="seg">
+          <button onclick="cmd('m')">&laquo; Mode</button>
+          <button onclick="cmd('M')">Mode &raquo;</button>
+          <button onclick="cmd('b')">&laquo; Band</button>
+          <button onclick="cmd('B')">Band &raquo;</button></div></div>
+      <div class="card grp"><div class="ttl">Step &amp; Bandwidth</div>
+        <div class="seg" style="margin-bottom:.35em">
+          <button onclick="cmd('s')">&laquo; Step</button>
+          <button onclick="cmd('S')">Step &raquo;</button></div>
+        <div class="seg">
+          <button onclick="cmd('w')">&laquo; BW</button>
+          <button onclick="cmd('W')">BW &raquo;</button></div></div>
+      <div class="card grp"><div class="ttl">Volume &amp; AGC</div>
+        <div class="seg" style="margin-bottom:.35em">
+          <button id="mutebtn" onclick="toggleMute()">Mute</button>
+          <button onclick="cmd('v')">Vol &minus;</button>
+          <button onclick="cmd('V')">Vol &plus;</button></div>
+        <div class="seg">
+          <button id="agcbtn" onclick="toggleAgc()">AGC</button>
+          <button onclick="cmd('a')">AGC &minus;</button>
+          <button onclick="cmd('A')">AGC &plus;</button></div></div>
     </div>
-
-    <!-- Console -->
+    <div class="card lockable">
+      <div class="ttl">Set Frequency</div>
+      <div class="setrow">
+        <input type="text" inputmode="decimal" id="freqval" placeholder="Set frequency">
+        <span class="u" id="setunit">--</span>
+        <button class="btn acc" onclick="setFreq()">Set</button>
+      </div>
+      <div class="hint" id="sethint">Enter the frequency in the unit shown.</div>
+    </div>
+    <table>
+      <tr><th colspan="4" class="HEADING">Receiver</th></tr>
+      <tr><td class="LABEL">Step</td><td id="step">--</td>
+          <td class="LABEL">Bandwidth</td><td id="bw">--</td></tr>
+      <tr><td class="LABEL">Volume</td><td id="vol">--</td>
+          <td class="LABEL">AGC/Att</td><td id="agc">--</td></tr>
+      <tr><td class="LABEL">Station</td><td colspan="3" id="station">--</td></tr>
+      <tr><td class="LABEL">RDS Text</td><td colspan="3" id="rt">--</td></tr>
+    </table>
+    <table>
+      <tr><th colspan="2" class="HEADING">Frequency Limit Override</th></tr>
+      <tr><td class="LABEL">Allow tuning beyond band limits</td>
+          <td><input type="checkbox" id="override" onchange="setVal('override',this.checked?1:0)"></td></tr>
+      <tr><td colspan="2" class="HINT">When unlocked, tuning ignores the firmware band edges
+          (still within the SI4732 physical range). Leave locked for normal behavior.</td></tr>
+    </table>
+    <table>
+      <tr><th colspan="2" class="HEADING">Morse (CW) Decoder</th></tr>
+      <tr><td class="LABEL">Signal source</td>
+          <td><select id="morse" onchange="setVal('morse',this.value)">
+            <option value="0">Off</option><option value="1">RSSI/SNR</option><option value="2">CW (audio)</option>
+          </select></td></tr>
+      <tr><td class="LABEL">Decoded</td><td class="MONO" id="morsetext">--</td></tr>
+    </table>
     <div class="card">
       <div class="ttl">Serial Console</div>
       <div class="row">
-        <input type="text" id="rawInput" placeholder="Raw command(s), e.g. RRR or F7200000" autocomplete="off">
+        <input type="text" id="rawInput" placeholder="Raw command(s), e.g. RRR or ?STATUS" autocomplete="off">
         <button id="rawSendBtn">Send</button>
-        <button id="clearLogBtn" class="ghost">Clear</button>
+        <button id="clearLogBtn">Clear</button>
       </div>
       <pre id="log" class="log"></pre>
     </div>
+  </div></div>
 
-    <!-- Help -->
+  <!-- MEMORY -------------------------------------------------------------- -->
+  <div id="memory" class="pane"><div class="wrap">
+    <table>
+      <tr><th colspan="4" class="HEADING">Stored Stations <span id="mcount"></span></th></tr>
+      <tbody id="mlist"><tr><td colspan="4" class="CENTER">Connect to load</td></tr></tbody>
+    </table>
+    <table>
+      <tr><th colspan="2" class="HEADING">Save Current Frequency</th></tr>
+      <tr><td class="LABEL">Slot</td>
+          <td><input type="number" id="saveslot" min="1" value="1" style="width:5em">
+          <button onclick="saveCur()">Save here</button></td></tr>
+      <tr><td colspan="2" class="HINT">Stores the currently tuned frequency and mode into the chosen slot.</td></tr>
+    </table>
+    <table>
+      <tr><th colspan="2" class="HEADING">Manual Edit</th></tr>
+      <tr><td class="LABEL">Slot</td><td><input type="number" id="eslot" min="1" value="1" style="width:5em"></td></tr>
+      <tr><td class="LABEL">Band</td><td><select id="eband"></select></td></tr>
+      <tr><td class="LABEL">Frequency</td><td>
+          <input type="number" step="any" id="efreq" style="width:8em">
+          <select id="eunit"><option value="k">kHz</option><option value="M">MHz</option></select></td></tr>
+      <tr><td class="LABEL">Mode</td><td><select id="emode"></select></td></tr>
+      <tr><td colspan="2" class="CENTER"><button onclick="setSlot()">Write slot</button></td></tr>
+    </table>
+  </div></div>
+
+  <!-- CONFIG -------------------------------------------------------------- -->
+  <div id="config" class="pane"><div class="wrap">
+    <table>
+      <tr><th colspan="2" class="HEADING">Display &amp; UI</th></tr>
+      <tr><td class="LABEL">Brightness</td><td>
+        <input type="range" id="brt" min="10" max="255" step="5" onchange="sset('brt',this.value)" style="width:70%"> <span id="brtv"></span></td></tr>
+      <tr><td class="LABEL">Theme</td><td><select id="theme" onchange="sset('theme',this.value)"></select></td></tr>
+      <tr><td class="LABEL">UI Layout</td><td><select id="ui" onchange="sset('ui',this.value)">
+        <option value="0">Default</option><option value="1">S-Meter</option></select></td></tr>
+      <tr><td class="LABEL">Reverse Scrolling</td><td><input type="checkbox" id="scroll" onchange="sset('scroll',this.checked?1:0)"></td></tr>
+      <tr><td class="LABEL">Zoomed Menu</td><td><input type="checkbox" id="zoom" onchange="sset('zoom',this.checked?1:0)"></td></tr>
+      <tr><td class="LABEL">Sleep (s, 0=Off)</td><td>
+        <input type="range" id="sleep" min="0" max="255" step="5" onchange="sset('sleep',this.value)" style="width:70%"> <span id="sleepv"></span></td></tr>
+      <tr><td class="LABEL">Sleep Mode</td><td><select id="sleepmode" onchange="sset('sleepmode',this.value)">
+        <option value="0">Locked</option><option value="1">Unlocked</option><option value="2">CPU Sleep</option></select></td></tr>
+
+      <tr><th colspan="2" class="HEADING">Radio</th></tr>
+      <tr><td class="LABEL">RDS Mode</td><td><select id="rds" onchange="sset('rds',this.value)">
+        <option value="0">PS</option><option value="1">PS+CT</option><option value="2">PS+PI</option>
+        <option value="3">PS+PI+CT</option><option value="4">ALL-CT (EU)</option><option value="5">ALL-CT (US)</option>
+        <option value="6">ALL (EU)</option><option value="7">ALL (US)</option></select></td></tr>
+      <tr><td class="LABEL">FM Region</td><td><select id="region" onchange="sset('region',this.value)">
+        <option value="0">EU/JP/AU (50us)</option><option value="1">US (75us)</option></select></td></tr>
+      <tr><td class="LABEL">Time Zone</td><td><select id="utc" onchange="sset('utc',this.value)"></select></td></tr>
+
+      <tr><th colspan="2" class="HEADING">Connectivity</th></tr>
+      <tr><td class="LABEL">USB Port</td><td><select id="usb" onchange="sset('usb',this.value)">
+        <option value="0">Off</option><option value="1">Ad hoc</option></select></td></tr>
+      <tr><td class="LABEL">Bluetooth</td><td><select id="ble" onchange="sset('ble',this.value)">
+        <option value="0">Off</option><option value="1">Ad hoc</option><option value="2">HID</option></select></td></tr>
+      <tr><td class="LABEL">Wi-Fi</td><td><select id="wifi" onchange="cfgWifi(this.value)">
+        <option value="0">Off</option><option value="1">AP Only</option><option value="2">AP+Connect</option>
+        <option value="3">Connect</option><option value="4">Sync Only</option></select></td></tr>
+      <tr><td colspan="2" class="HINT">These settings apply immediately and are saved on the device.</td></tr>
+    </table>
     <div class="card help">
       <div class="ttl">About this app</div>
       <ul>
         <li><b>Chromium only.</b> Uses the Web Serial API (Chrome / Edge / Opera, desktop).</li>
-        <li><b>USB, not WiFi.</b> This app talks to the receiver over the USB serial port. It never uses WiFi/HTTP, so mixed-content blocking does not apply.</li>
-        <li><b>Offline &amp; installable.</b> A service worker caches the app shell, so it loads without a network. Use your browser's <em>Install app</em> option to add it to your desktop.</li>
-        <li><b>Setup.</b> On the receiver enable <code>Settings &rarr; USB Port &rarr; Ad hoc</code>, plug in USB, then click <b>Connect</b> (115200 8N1).</li>
-        <li><b>Telemetry</b> (frequency, band, mode, volume, RSSI, SNR, battery) is read from the device status stream. RDS and per-point spectrum data are not exposed over this serial protocol, so they are not shown.</li>
+        <li><b>USB, not WiFi.</b> Talks to the receiver over the USB serial port (115200 8N1). It never uses WiFi/HTTP.</li>
+        <li><b>Offline &amp; installable.</b> A service worker caches the app shell; use your browser's <em>Install app</em> option.</li>
+        <li><b>Setup.</b> On the receiver enable <code>Settings &rarr; USB Port &rarr; Ad hoc</code>, plug in USB, then Connect.</li>
+        <li>Full parity with the device web UI via the extended <code>?</code> serial protocol (status, scan, memory, config).</li>
       </ul>
     </div>
-  </div>
+  </div></div>
 
   <script src="app.js"></script>
 </body>
