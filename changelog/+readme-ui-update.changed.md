@@ -1,1 +1,0 @@
-Refreshed the README to document the tabbed web UI (Spectrum / Control / Memory / Config), the SDR spectrum + waterfall with click-to-tune, the RDS display, the offline Web Serial PWA, and the extended line-based serial protocol, with new screenshots of each tab and the PWA shell.
