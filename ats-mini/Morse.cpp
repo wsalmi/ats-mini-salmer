@@ -25,12 +25,6 @@ const char *morseModeName(uint8_t idx)
 
 bool morseIsEnabled() { return(morseModeIdx != MORSE_OFF); }
 
-#ifdef MORSE_AUDIO_INPUT
-bool morseAudioAvailable() { return(true); }
-#else
-bool morseAudioAvailable() { return(false); }
-#endif
-
 //
 // International Morse code table, indexed implicitly by the symbol
 // string (dots and dashes). Kept compact as a {code, char} list.
@@ -97,9 +91,8 @@ void morseReset()
   symbols[0] = '\0';
   spacePending = false;
 
-#ifdef MORSE_AUDIO_INPUT
+  // The audio CW source samples a 12-bit ADC; harmless for the RSSI source.
   analogReadResolution(12);
-#endif
 }
 
 void morseSetup()
@@ -112,12 +105,14 @@ void morseSetup()
 //
 static int morseReadEnvelope()
 {
-#ifdef MORSE_AUDIO_INPUT
   if(morseModeIdx == MORSE_AUDIO)
   {
     // Rectified peak-to-peak audio amplitude over a short burst.
     // This is a lightweight envelope detector; a future Goertzel
-    // tone filter can replace it for better selectivity.
+    // tone filter can replace it for better selectivity. On stock
+    // hardware MORSE_AUDIO_PIN (GPIO11) is unconnected and requires
+    // the optional audio->IO11 mod; using CW without it just reads a
+    // floating pin (the user's risk).
     int hi = 0, lo = 4095;
     for(int i = 0; i < 16; i++)
     {
@@ -128,7 +123,6 @@ static int morseReadEnvelope()
     // Scale 0..4095 peak-to-peak down to the RSSI-like 0..100 range
     return((hi - lo) * 100 / 4095);
   }
-#endif
 
   // RSSI/SNR source: a fresh read of the SI4732 signal quality
   rx.getCurrentReceivedSignalQuality();

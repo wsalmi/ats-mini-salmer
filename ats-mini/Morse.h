@@ -16,9 +16,10 @@
 //                  pin (GPIO11/ADC2). On the V3 this requires a small
 //                  hardware mod (wire from the audio output to IO11
 //                  with an RC low pass filter); it is routed from the
-//                  factory only on the V4. Enabled at compile time
-//                  with -DMORSE_AUDIO_INPUT, otherwise it transparently
-//                  falls back to the RSSI source.
+//                  factory only on the V4. The audio source is always
+//                  compiled in and selectable on screen; the menu warns
+//                  that it needs the mod. Without it, the pin is
+//                  unconnected and decoding is meaningless (user's risk).
 //
 
 // Morse decoder modes (also the index into the mode selector)
@@ -42,7 +43,6 @@ bool morseTickTime();
 
 // Queries
 bool morseIsEnabled();
-bool morseAudioAvailable();
 const char *morseGetText();
 int getTotalMorseModes();
 const char *morseModeName(uint8_t idx);

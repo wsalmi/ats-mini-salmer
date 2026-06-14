@@ -121,9 +121,11 @@ controles e mostra o aviso "Waterfall ativo — rádio pausado".*
 A live Morse decoder with a **pluggable signal source**. It defaults to the
 **RSSI/SNR** envelope, which works on stock hardware with no modification. An
 **audio (CW)** source samples the demodulated audio on GPIO11 (ADC2) and is meant
-for a future hardware mod (wire the audio output to IO11 through an RC low-pass
-filter; routed from the factory only on the V4). The audio source is compiled in
-with `-DMORSE_AUDIO_INPUT` and otherwise transparently falls back to RSSI/SNR.
+for an optional hardware mod (wire the audio output to IO11 through an RC low-pass
+filter; routed from the factory only on the V4). The audio (CW) source is always
+compiled in and selectable on screen — the menu warns that it needs the mod.
+Without the mod, IO11 is unconnected and selecting CW just reads a floating pin
+(use it at your own risk).
 
 Select the source on the device via **Menu > Morse** (Off / RSSI / audio) or from
 the web Status page. The decoded text is shown on the device screen and in the
@@ -133,10 +135,11 @@ web status (`morseText` in `/api/status`). See
 *Um decodificador de Morse ao vivo com uma **fonte de sinal plugável**. Por
 padrão usa o envelope **RSSI/SNR**, que funciona no hardware de fábrica sem
 modificação. A fonte **áudio (CW)** amostra o áudio demodulado no GPIO11 (ADC2) e
-é destinada a uma futura modificação de hardware (compilada com
-`-DMORSE_AUDIO_INPUT`, com fallback automático para RSSI/SNR). Selecione a fonte
-em **Menu > Morse** ou pela página web Status; o texto decodificado aparece na
-tela e no status web.*
+é destinada a uma modificação de hardware opcional. A fonte de áudio (CW) está
+sempre compilada e disponível na tela — o menu avisa que precisa da modificação.
+Sem ela, o IO11 fica desconectado e selecionar CW apenas lê um pino flutuante
+(use por sua conta e risco). Selecione a fonte em **Menu > Morse** ou pela página
+web Status; o texto decodificado aparece na tela e no status web.*
 
 ## Frequency Limit Override / Liberação dos Limites de Frequência
 

@@ -1,0 +1,1 @@
+The Morse "CW (audio)" source is now always compiled in and selectable on screen. Instead of being gated behind the `-DMORSE_AUDIO_INPUT` compile flag, the menu always shows an advisory that it needs the optional audio->IO11 hardware mod; using it without the mod just reads an unconnected pin (at your own risk).

@@ -1141,7 +1141,7 @@ static const String webStatusJson()
   json += "\"station\":\"" + webJsonEscape(station) + "\",";
   json += "\"rt\":\"" + webJsonEscape(getRadioText()) + "\",";
   json += "\"morse\":" + String(morseModeIdx) + ",";
-  json += "\"morseAudio\":" + String(morseAudioAvailable()? "true" : "false") + ",";
+  json += "\"morseAudio\":true,";
   json += "\"morseText\":\"" + webJsonEscape(morseGetText()) + "\",";
   json += "\"override\":" + String(freqOverride? "true" : "false") + ",";
   // Configuration mirror (so the config page can show current values)

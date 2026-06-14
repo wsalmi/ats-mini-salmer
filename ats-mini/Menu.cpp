@@ -1784,7 +1784,7 @@ static void drawMorse(int x, int y, int sx)
   spr.drawString(morseModeName(morseModeIdx), 40+x+(sx/2), 50+y, 2);
 
   spr.setTextColor(TH.menu_item);
-  if(morseModeIdx==MORSE_AUDIO && !morseAudioAvailable())
+  if(morseModeIdx==MORSE_AUDIO)
   {
     spr.drawString("needs mod:", 40+x+(sx/2), 78+y, 2);
     spr.drawString("audio->IO11", 40+x+(sx/2), 94+y, 2);
